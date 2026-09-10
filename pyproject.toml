@@ -3,7 +3,7 @@ requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
-name = "shuck"
+name = "shuck-ishell"
 version = "0.1.0.dev0"
 description = "Automated Python reduction of iSHELL J3 and Kgas spectra."
 readme = "README.md"
