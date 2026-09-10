@@ -1,0 +1,1 @@
+"""Optimal point-source extraction."""

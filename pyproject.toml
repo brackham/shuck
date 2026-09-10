@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "shuck"
+version = "0.1.0.dev0"
+description = "Automated Python reduction of iSHELL J3 and Kgas spectra."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+authors = [
+  {name = "Benjamin V. Rackham"},
+]
+dependencies = [
+  "numpy>=1.26",
+  "scipy>=1.12",
+  "astropy>=6.0",
+  "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-cov>=5",
+  "ruff>=0.6",
+  "tox>=4",
+]
+
+[project.scripts]
+shuck = "shuck.cli:main"
+shuckit = "shuck.cli:shuckit_main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shuck"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "regression: requires local full-resolution iSHELL/SpeXTool reference data",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

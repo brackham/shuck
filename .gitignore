@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+dist/
+build/
+*.egg-info/
+
+# macOS
+.DS_Store
+._*
+
+# Local iSHELL data and generated products
+raw/
+cal/
+proc/
+qa/
+reference/local/
+*.fits
+*.fits.gz
+
+# SpeXTool source/data are local references, not vendored here
+Spextool/
