@@ -12,9 +12,22 @@
 
 ## Routine workflow
 
-1. `shuck setup RAW_DIRECTORY -o FILE.shuck`
-2. User inspects/edits `FILE.shuck`.
-3. `shuckit FILE.shuck` performs automatic validation and all stages below.
+The standard layout is `<NIGHT>/{raw,cal,proc,qa}` with a generated `<NIGHT>/<NIGHT>.shuck`
+reduction plan and persistent `<NIGHT>/<NIGHT>.overrides.toml` human decisions. The `raw/`
+directory must exist; setup creates the other three directories when needed and never modifies raw
+FITS files. `--write-log` additionally creates the derived complete FITS-header inventory
+`<NIGHT>/<NIGHT>.obslog.csv`; any observatory `obslog.txt` remains untouched.
+
+1. `shuck setup NIGHT_DIRECTORY --write-log` (or use `NIGHT_DIRECTORY/raw`) generates the initial
+   `.shuck`, proposed override file, and optional observing log. Suggestions are not applied yet.
+2. The user reviews and edits `<NIGHT>.overrides.toml`.
+3. `shuck setup NIGHT_DIRECTORY` automatically reads the reviewed overrides and regenerates the
+   default `.shuck` plan without changing the override file.
+4. `shuckit FILE.shuck` performs automatic validation and all stages below.
+
+In the generated plan, each raw exposure retains an explicit role: `flat`, `arc_on`, `arc_off`,
+`dark`, `science`, `standard`, or `ignore`. The A-Sky/Dark B-beam exclusion applies only to target
+science and standard exposures; B-beam calibration frames remain calibration frames.
 
 Stage commands remain available independently for development and inspection.
 
@@ -43,6 +56,10 @@ for subsequent order location/extraction.
 For J3 and Kgas use ThAr on/off exposures and the mode-specific reference information. Reproduce
 1DXD wavelength fitting, 2-D line distortion mapping, and rectification coordinates. Automatically
 accept the normal cross-correlation offset; emit QA and warn on suspicious offsets/residuals.
+
+Setup forms a calibration set only from a contiguous same-mode sequence containing flats, ThAr-on,
+and ThAr-off frames. It proposes the nearest complete same-mode sequence in observation time for
+each target exposure; target identity and pointing do not constrain this proposed association.
 
 ### Science/standard preprocessing
 

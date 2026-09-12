@@ -1,0 +1,10 @@
+# Proposed shuck setup corrections.
+# Review, edit, or delete these rules before rerunning shuck setup.
+# These suggestions were not applied to the .shuck file generated on this run.
+# Raw FITS headers are never modified.
+
+[objects."HD_106965"]
+frametype = "standard"
+
+[files."icm.2026A021.260406.TOI3884.00030.a.fits"]
+frametype = "ignore"
