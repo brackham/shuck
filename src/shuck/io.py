@@ -5,15 +5,24 @@ from __future__ import annotations
 import csv
 import re
 from dataclasses import dataclass
+from datetime import date, time
 from numbers import Number
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+from astropy import units as u
+from astropy.coordinates import Angle
 from astropy.io import fits
+
+from shuck.detector import initial_uncorrected_variance, initialize_detector_mask
 
 FITS_SUFFIXES = frozenset({".fit", ".fits", ".fts"})
 COMMENTARY_KEYWORDS = frozenset({"", "COMMENT", "HISTORY", "CONTINUE"})
 OBSLOG_PRIORITY_COLUMNS = ("OBJECT", "TCS_OBJ", "DATATYPE", "ITIME", "XDTILT", "BEAM")
+ISHELL_DETECTOR_SHAPE = (2048, 2048)
+ISHELL_RAW_IMAGE_UNIT = "DN"
+ISHELL_RAW_VARIANCE_UNIT = "DN2"
 
 
 @dataclass(frozen=True)
@@ -55,6 +64,114 @@ class FitsHeaderRecord:
     filename: str
     values: tuple[tuple[str, str], ...]
     mjd_obs: float | None
+
+
+@dataclass(frozen=True)
+class IShellRawMetadata:
+    """Typed primary-header metadata required for one raw iSHELL exposure."""
+
+    itime: float
+    coadds: int
+    ndr: int
+    table_se: float
+    divisor: float
+    mode: str
+    filename: str
+    date_obs: date
+    time_obs: time
+    mjd_obs: float
+    object_name: str
+    beam: str
+    ra: str
+    dec: str
+    airmass: float
+    hour_angle: str
+    position_angle: float
+
+
+@dataclass(frozen=True)
+class RawIShellFrame:
+    """One decoded native iSHELL exposure in detector-native orientation.
+
+    All detector images are independent float64 arrays in NumPy
+    ``(row, column)`` order and units of :attr:`image_unit`. ``raw_image``
+    is reconstructed from ``pedestal_image - signal_image``. The native
+    primary difference image is retained separately but is not required or
+    validated to equal that reconstruction. ``variance`` describes
+    ``raw_image`` and has units of :attr:`variance_unit`.
+
+    The behavioral reference for the MEF mapping and reconstruction is
+    SpeXTool 5.0.3
+    ``instruments/ishell/pro/mc_readishellfits.pro``.
+    """
+
+    path: Path
+    raw_image: np.ndarray
+    primary_difference_image: np.ndarray
+    pedestal_image: np.ndarray
+    signal_image: np.ndarray
+    header: fits.Header
+    metadata: IShellRawMetadata
+    variance: np.ndarray
+    mask: np.ndarray
+    image_unit: str = ISHELL_RAW_IMAGE_UNIT
+    variance_unit: str = ISHELL_RAW_VARIANCE_UNIT
+
+
+class RawIShellFitsError(ValueError):
+    """Raised when a FITS file is not a valid native iSHELL raw exposure."""
+
+
+def read_ishell_raw(path: str | Path) -> RawIShellFrame:
+    """Read one native iSHELL MEF exposure into a DN-valued raw frame.
+
+    The reader maps HDU 0 to the native primary difference image, HDU 1 to
+    the summed pedestal reads, and HDU 2 to the summed signal reads. It
+    applies the primary-header ``DIVISOR`` once to each stored array and uses
+    pedestal minus signal as the canonical ``raw_image``. Arrays remain in
+    detector-native NumPy ``(row, column)`` orientation; no transpose,
+    rotation, or flip is performed.
+
+    The behavioral reference is SpeXTool 5.0.3
+    ``instruments/ishell/pro/mc_readishellfits.pro``. Unlike that broader
+    routine, this raw-reader boundary does not normalize by integration time
+    or apply detector corrections, pairing, or calibration.
+    """
+
+    frame_path = Path(path)
+    with fits.open(frame_path, mode="readonly", memmap=False) as hdus:
+        _validate_raw_hdus(hdus, frame_path)
+        header = hdus[0].header.copy()
+        metadata = _parse_ishell_raw_metadata(header, frame_path)
+        decoded_arrays = []
+        for hdu in hdus:
+            decoded = np.array(hdu.data, dtype=np.float64, copy=True)
+            decoded /= metadata.divisor
+            decoded_arrays.append(decoded)
+
+    primary_difference_image, pedestal_image, signal_image = decoded_arrays
+    raw_image = pedestal_image - signal_image
+    variance = initial_uncorrected_variance(
+        raw_image,
+        itime=metadata.itime,
+        coadds=metadata.coadds,
+        ndr=metadata.ndr,
+        table_se=metadata.table_se,
+        divisor=metadata.divisor,
+    )
+    mask = initialize_detector_mask(raw_image.shape)
+
+    return RawIShellFrame(
+        path=frame_path,
+        raw_image=raw_image,
+        primary_difference_image=primary_difference_image,
+        pedestal_image=pedestal_image,
+        signal_image=signal_image,
+        header=header,
+        metadata=metadata,
+        variance=variance,
+        mask=mask,
+    )
 
 
 def scan_fits_headers(raw_directory: str | Path) -> tuple[RawFrameHeader, ...]:
@@ -208,6 +325,130 @@ def _read_fits_header_record(path: Path) -> FitsHeaderRecord:
                     except (TypeError, ValueError):
                         pass
     return FitsHeaderRecord(path.name, tuple(values), mjd_obs)
+
+
+def _validate_raw_hdus(hdus: fits.HDUList, path: Path) -> None:
+    if len(hdus) != 3:
+        raise RawIShellFitsError(
+            f"Expected exactly 3 HDUs in native iSHELL FITS file {path}; found {len(hdus)}"
+        )
+    if not isinstance(hdus[0], fits.PrimaryHDU):
+        raise RawIShellFitsError(f"HDU 0 is not a primary image HDU in {path}")
+    for index, hdu in enumerate(hdus):
+        if not isinstance(hdu, (fits.PrimaryHDU, fits.ImageHDU)) or hdu.data is None:
+            raise RawIShellFitsError(f"HDU {index} is not a populated image HDU in {path}")
+        if hdu.data.shape != ISHELL_DETECTOR_SHAPE:
+            raise RawIShellFitsError(
+                f"HDU {index} in {path} has detector shape {hdu.data.shape}; "
+                f"expected {ISHELL_DETECTOR_SHAPE} in (row, column) order"
+            )
+        if not np.issubdtype(hdu.data.dtype, np.number):
+            raise RawIShellFitsError(
+                f"HDU {index} does not contain numeric detector data in {path}"
+            )
+
+
+def _parse_ishell_raw_metadata(header: fits.Header, path: Path) -> IShellRawMetadata:
+    instrument = _required_value(header, "INSTRUME", str, path)
+    if instrument.casefold() != "ishell spectrograph":
+        raise RawIShellFitsError(
+            f"Invalid INSTRUME={instrument!r} in {path}; expected 'iSHELL Spectrograph'"
+        )
+
+    itime = _required_positive_float(header, "ITIME", path)
+    coadds = _required_positive_int(header, "CO_ADDS", path)
+    ndr = _required_positive_int(header, "NDR", path)
+    table_se = _required_positive_float(header, "TABLE_SE", path)
+    divisor = _required_positive_float(header, "DIVISOR", path)
+    mode = _required_value(header, "XDTILT", str, path)
+    filename = _required_value(header, "IRAFNAME", str, path)
+    object_name = _required_value(header, "OBJECT", str, path)
+    beam = _required_value(header, "BEAM", str, path).upper()
+    if beam not in {"A", "B"}:
+        raise RawIShellFitsError(f"Invalid BEAM={beam!r} in {path}; expected 'A' or 'B'")
+
+    date_text = _required_value(header, "DATE_OBS", str, path)
+    time_text = _required_value(header, "TIME_OBS", str, path)
+    try:
+        date_obs = date.fromisoformat(date_text)
+    except ValueError as error:
+        raise RawIShellFitsError(f"Invalid DATE_OBS={date_text!r} in {path}") from error
+    try:
+        time_obs = time.fromisoformat(time_text)
+    except ValueError as error:
+        raise RawIShellFitsError(f"Invalid TIME_OBS={time_text!r} in {path}") from error
+
+    mjd_obs = _required_finite_float(header, "MJD_OBS", path)
+    airmass = _required_positive_float(header, "TCS_AM", path)
+    position_angle = _required_finite_float(header, "POSANGLE", path)
+    ra = _required_value(header, "TCS_RA", str, path)
+    dec = _required_value(header, "TCS_DEC", str, path)
+    hour_angle = _required_value(header, "TCS_HA", str, path)
+    _validate_angle(ra, "TCS_RA", u.hourangle, path)
+    _validate_angle(dec, "TCS_DEC", u.deg, path)
+    _validate_angle(hour_angle, "TCS_HA", u.hourangle, path)
+
+    return IShellRawMetadata(
+        itime=itime,
+        coadds=coadds,
+        ndr=ndr,
+        table_se=table_se,
+        divisor=divisor,
+        mode=mode,
+        filename=filename,
+        date_obs=date_obs,
+        time_obs=time_obs,
+        mjd_obs=mjd_obs,
+        object_name=object_name,
+        beam=beam,
+        ra=ra,
+        dec=dec,
+        airmass=airmass,
+        hour_angle=hour_angle,
+        position_angle=position_angle,
+    )
+
+
+def _required_value(header: fits.Header, keyword: str, converter: type[Any], path: Path) -> Any:
+    try:
+        value = _optional_value(header, keyword, converter)
+    except ValueError as error:
+        raise RawIShellFitsError(f"{error} in {path}") from error
+    if value is None:
+        raise RawIShellFitsError(f"Missing required {keyword} in {path}")
+    return value
+
+
+def _required_finite_float(header: fits.Header, keyword: str, path: Path) -> float:
+    value = _required_value(header, keyword, float, path)
+    if not np.isfinite(value):
+        raise RawIShellFitsError(f"Invalid {keyword}={value!r} in {path}; expected finite value")
+    return value
+
+
+def _required_positive_float(header: fits.Header, keyword: str, path: Path) -> float:
+    value = _required_finite_float(header, keyword, path)
+    if value <= 0.0:
+        raise RawIShellFitsError(f"Invalid {keyword}={value!r} in {path}; expected value > 0")
+    return value
+
+
+def _required_positive_int(header: fits.Header, keyword: str, path: Path) -> int:
+    raw_value = _required_value(header, keyword, float, path)
+    if not np.isfinite(raw_value) or raw_value <= 0.0 or not raw_value.is_integer():
+        raise RawIShellFitsError(
+            f"Invalid {keyword}={raw_value!r} in {path}; expected a positive integer"
+        )
+    return int(raw_value)
+
+
+def _validate_angle(value: str, keyword: str, unit: u.UnitBase, path: Path) -> None:
+    try:
+        angle = Angle(value, unit=unit)
+    except (TypeError, ValueError) as error:
+        raise RawIShellFitsError(f"Invalid {keyword}={value!r} in {path}") from error
+    if not np.isfinite(angle.degree):
+        raise RawIShellFitsError(f"Invalid {keyword}={value!r} in {path}")
 
 
 def _is_scalar_header_value(value: object) -> bool:

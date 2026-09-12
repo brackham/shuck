@@ -39,6 +39,14 @@ Reference behavior is SpeXTool 5.0.3 iSHELL FITS reading/correction. The impleme
 construct the science image, uncertainty/variance, and mask from the iSHELL MEF, including the
 same amplifier, linearity, and saturation behavior used by the supported SpeXTool workflow.
 
+At the raw-reader boundary, the primary difference, summed pedestal, summed signal, and reconstructed
+pedestal-minus-signal arrays are divided by the FITS `DIVISOR` and stored in detector-native
+NumPy `(row, column)` orientation with units of DN. The corresponding initial variance is stored in
+DN squared and the mask is a zero-initialized `uint8` array. Exposure-time normalization and detector
+corrections belong to later processing stages. The native primary difference is retained for
+diagnostics, but equality with the independently reconstructed pedestal-minus-signal image is neither
+assumed nor enforced.
+
 ### Master dark
 
 Group by detector/exposure configuration, not by an assumed number of frames. Combine using the
