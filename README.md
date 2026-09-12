@@ -7,10 +7,18 @@ the reduction path currently performed with SpeXTool 5.0.3.
 The intended routine workflow is:
 
 ```bash
-shuck setup /path/to/night/raw -o night.shuck
-# inspect and edit night.shuck
-shuckit night.shuck
+shuck setup /path/to/260406 --write-log
+# review/edit /path/to/260406/260406.overrides.toml
+shuck setup /path/to/260406
+shuckit /path/to/260406/260406.shuck
 ```
+
+The equivalent `shuck setup /path/to/260406/raw` form is also supported. The existing `raw/`
+directory contains the inputs; setup creates sibling `cal/`, `proc/`, and `qa/` directories. Use
+`-o FILE.shuck` to override the default control-file location. The first run also writes a proposed
+persistent override file; reviewed overrides are automatically applied on later runs without
+modifying raw FITS headers. `--write-log` optionally writes a complete derived FITS-header CSV at
+the night level and leaves any observatory `obslog.txt` untouched.
 
 Developer/power-user stage commands are also planned:
 

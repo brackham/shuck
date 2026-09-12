@@ -57,9 +57,16 @@ If code and docs disagree, stop and flag the discrepancy rather than silently ch
 Routine user workflow:
 
 ```bash
-shuck setup RAW_DIRECTORY -o FILE.shuck
+shuck setup NIGHT_DIRECTORY --write-log
+# review/edit NIGHT_DIRECTORY/NIGHT.overrides.toml
+shuck setup NIGHT_DIRECTORY
 shuckit FILE.shuck
 ```
+
+`shuck setup NIGHT_DIRECTORY/raw` is equivalent. `-o FILE.shuck` optionally overrides the default
+`NIGHT_DIRECTORY/NIGHT_DIRECTORY.shuck` output path. Setup automatically discovers the persistent
+night-level override TOML; `--overrides` selects another path, and `--write-log` writes the derived
+complete FITS-header CSV.
 
 Developer/power-user commands:
 
