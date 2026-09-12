@@ -20,9 +20,7 @@ raw/
 cal/
 proc/
 qa/
-reference/local/
+reference/
+/local/
 *.fits
 *.fits.gz
-
-# SpeXTool source/data are local references, not vendored here
-Spextool/

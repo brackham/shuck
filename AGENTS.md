@@ -52,6 +52,17 @@ If code and docs disagree, stop and flag the discrepancy rather than silently ch
 - Unit tests must run without either environment variable. Full regression tests may skip clearly
   when `SHUCK_REFERENCE_DATA` is unavailable.
 
+## Local development workspace
+
+- `reference/` contains local SpeXTool sources, manuals, and private regression data; never modify,
+  stage, or commit anything under it.
+- `local/scripts/` and `local/notebooks/` hold disposable, machine-specific scientific exploration;
+  `local/output/` and `local/plots/` hold generated diagnostics. Never stage or commit `local/`.
+- Local tools should expose intermediate values, comparisons, plots, and numerical diagnostics for
+  scientific inspection, not merely rerun pytest. They supplement rather than replace tracked tests.
+- For substantive scientific or numerical work, automatically create or update a useful local script
+  or notebook when it would help validate the behavior against available reference data.
+
 ## CLI contract
 
 Routine user workflow:
