@@ -13,6 +13,19 @@ from shuck.statistics import robust_weighted_mean
 
 
 @dataclass(frozen=True)
+class CombinedObservationMetadata:
+    """Observation metadata retained for telluric correction and provenance."""
+
+    mode: str
+    mean_mjd: float
+    ra: str
+    dec: str
+    mean_airmass: float
+    slit_width_arcsec: float
+    plate_scale_arcsec_per_pixel: float
+
+
+@dataclass(frozen=True)
 class CombinedSpectrum:
     """Robustly combined multi-order spectrum for one control-file group."""
 
@@ -21,6 +34,37 @@ class CombinedSpectrum:
     scale_factors: np.ndarray
     input_files: tuple[Path, ...]
     sigma_clip: float
+    metadata: CombinedObservationMetadata | None = None
+
+
+def _combine_observation_metadata(
+    exposures: tuple[ExtractedExposure, ...],
+) -> CombinedObservationMetadata | None:
+    metadata = [exposure.metadata for exposure in exposures]
+    plate_scales = [exposure.plate_scale_arcsec_per_pixel for exposure in exposures]
+    if any(item is None for item in metadata) or any(value is None for value in plate_scales):
+        return None
+    complete = [item for item in metadata if item is not None]
+    scales = np.array([value for value in plate_scales if value is not None])
+    modes = {item.mode for item in complete}
+    slit_widths = np.array([item.slit_width_arcsec for item in complete], dtype=np.float64)
+    if len(modes) != 1:
+        raise ValueError(f"cannot combine exposures from different modes: {modes}")
+    if np.any(~np.isfinite(slit_widths)):
+        raise ValueError("slit width metadata are required for telluric correction")
+    if not np.allclose(slit_widths, slit_widths[0], rtol=0, atol=1e-6):
+        raise ValueError("cannot combine exposures with different slit widths")
+    if not np.allclose(scales, scales[0], rtol=0, atol=1e-12):
+        raise ValueError("cannot combine exposures with different plate scales")
+    return CombinedObservationMetadata(
+        mode=modes.pop(),
+        mean_mjd=float(np.mean([item.mjd_obs for item in complete])),
+        ra=complete[0].ra,
+        dec=complete[0].dec,
+        mean_airmass=float(np.mean([item.airmass for item in complete])),
+        slit_width_arcsec=float(slit_widths[0]),
+        plate_scale_arcsec_per_pixel=float(scales[0]),
+    )
 
 
 def determine_scale_factors(
@@ -125,6 +169,7 @@ def combine_exposures(
         scale_factors=scales,
         input_files=tuple(exposure.source_path for exposure in exposures),
         sigma_clip=sigma_clip,
+        metadata=_combine_observation_metadata(exposures),
     )
 
 
@@ -145,6 +190,14 @@ def write_combined_spectrum(
     header["SCALEORD"] = product.scale_order
     header["SIGCLIP"] = product.sigma_clip
     header["NINPUTS"] = len(product.input_files)
+    if product.metadata is not None:
+        header["OBSMODE"] = product.metadata.mode
+        header["AVE_MJD"] = product.metadata.mean_mjd
+        header["AIRMASS"] = product.metadata.mean_airmass
+        header["RA"] = product.metadata.ra
+        header["DEC"] = product.metadata.dec
+        header["SLTW_ARC"] = product.metadata.slit_width_arcsec
+        header["PLTSCALE"] = product.metadata.plate_scale_arcsec_per_pixel
     for source, scale in zip(product.input_files, product.scale_factors, strict=True):
         header.add_history(f"INPUT {source.name} SCALE {scale:.10g}")
     hdus: list[fits.hdu.base.ExtensionHDU] = [fits.PrimaryHDU(header=header)]

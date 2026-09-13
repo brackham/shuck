@@ -24,6 +24,7 @@ class PreprocessedExposure:
     source_path: Path
     dark_files: tuple[Path, ...]
     flat_files: tuple[Path, ...]
+    plate_scale_arcsec_per_pixel: float | None = None
 
 
 def preprocess_exposure(
@@ -97,6 +98,7 @@ def preprocess_exposure(
         source_path=source,
         dark_files=master_dark.input_files,
         flat_files=normalized_flat.input_files,
+        plate_scale_arcsec_per_pixel=normalized_flat.plate_scale_arcsec_per_pixel,
     )
 
 
@@ -153,4 +155,5 @@ def combine_preprocessed_exposures(
         source_path=Path(f"group_stack_{len(exposures)}_exposures"),
         dark_files=tuple(path for exposure in exposures for path in exposure.dark_files),
         flat_files=exposures[0].flat_files,
+        plate_scale_arcsec_per_pixel=exposures[0].plate_scale_arcsec_per_pixel,
     )

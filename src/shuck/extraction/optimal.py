@@ -18,6 +18,7 @@ from shuck.extraction.profile import (
     make_spatial_profiles,
 )
 from shuck.extraction.trace import SpectralTrace, trace_orders
+from shuck.io import IShellRawMetadata
 from shuck.statistics import robust_weighted_mean
 
 EXTRACTION_FAILURE_BIT = np.uint16(8)
@@ -45,6 +46,8 @@ class ExtractedExposure:
     apertures: tuple[ApertureLocation, ...]
     traces: tuple[SpectralTrace, ...]
     source_path: Path
+    metadata: IShellRawMetadata | None = None
+    plate_scale_arcsec_per_pixel: float | None = None
 
 
 @dataclass(frozen=True)
@@ -256,6 +259,8 @@ def extract_exposure(
         apertures=apertures,
         traces=traces,
         source_path=exposure.source_path,
+        metadata=exposure.metadata,
+        plate_scale_arcsec_per_pixel=exposure.plate_scale_arcsec_per_pixel,
     )
 
 
@@ -281,6 +286,16 @@ def write_extracted_exposure(product: ExtractedExposure, path: str | Path) -> Pa
     primary["SHUCKVER"] = "0.1.0.dev0"
     primary["STAGE"] = "EXTRACTED"
     primary["NORDERS"] = len(product.orders)
+    if product.metadata is not None:
+        primary["OBSMODE"] = product.metadata.mode
+        primary["MJD_OBS"] = product.metadata.mjd_obs
+        primary["AIRMASS"] = product.metadata.airmass
+        primary["RA"] = product.metadata.ra
+        primary["DEC"] = product.metadata.dec
+        if product.metadata.slit_width_arcsec is not None:
+            primary["SLTW_ARC"] = product.metadata.slit_width_arcsec
+    if product.plate_scale_arcsec_per_pixel is not None:
+        primary["PLTSCALE"] = product.plate_scale_arcsec_per_pixel
     primary.add_history(f"INPUT {product.source_path.name}")
     hdus: list[fits.hdu.base.ExtensionHDU] = [fits.PrimaryHDU(header=primary)]
     aperture_by_order = {item.order: item for item in product.apertures}
