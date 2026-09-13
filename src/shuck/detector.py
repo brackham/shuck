@@ -158,7 +158,8 @@ def apply_nonlinearity_correction(
         correction[-4:, :] = 1.0
         correction[:, :4] = 1.0
         correction[:, -4:] = 1.0
-    return source / correction
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        return source / correction
 
 
 def process_raw_frame(
