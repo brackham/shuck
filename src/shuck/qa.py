@@ -10,7 +10,10 @@ from pathlib import Path
 import numpy as np
 
 from shuck.calibration.flat import NormalizedFlat
+from shuck.calibration.rectify import DistortionSolution, rectify_order
 from shuck.calibration.wavecal import WavelengthSolution
+from shuck.combine import CombinedSpectrum
+from shuck.extraction.optimal import ExtractedExposure
 
 _matplotlib_cache = Path(tempfile.gettempdir()) / "shuck-matplotlib"
 _matplotlib_cache.mkdir(parents=True, exist_ok=True)
@@ -175,6 +178,234 @@ def write_wavecal_qa(product: WavelengthSolution, output_prefix: str | Path) -> 
             ]
             for order, xrange in zip(product.orders, product.xranges, strict=True)
         },
+    }
+    metrics_path.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+    return plot_path, metrics_path
+
+
+def write_rectification_qa(
+    product: DistortionSolution,
+    wavecal: WavelengthSolution,
+    output_prefix: str | Path,
+) -> tuple[Path, Path]:
+    """Write line-trace, distortion-fit, and rectified-arc QA."""
+
+    prefix = Path(output_prefix)
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    plot_path = prefix.with_suffix(".png")
+    metrics_path = prefix.with_suffix(".json")
+    x_mid = np.array([trace.x_mid for trace in product.traces])
+    y_mid = np.array([trace.y_mid for trace in product.traces])
+    slope = np.array([trace.slope for trace in product.traces])
+    modeled = np.polynomial.polynomial.polyval2d(
+        x_mid,
+        y_mid,
+        product.slope_coefficients.reshape(
+            product.slope_y_degree + 1,
+            product.slope_x_degree + 1,
+        ).T,
+    )
+    residual = slope - modeled
+    middle_geometry = product.geometries[len(product.geometries) // 2]
+    rectified = rectify_order(
+        np.where(np.isfinite(wavecal.arc_image), wavecal.arc_image, 0.0),
+        np.where(np.isfinite(wavecal.arc_variance), wavecal.arc_variance, 1.0),
+        np.zeros_like(wavecal.arc_image, dtype=np.uint16),
+        middle_geometry,
+    )
+
+    figure, axes = plt.subplots(1, 3, figsize=(16, 5), constrained_layout=True)
+    finite_arc = wavecal.arc_image[np.isfinite(wavecal.arc_image)]
+    lower, upper = np.percentile(finite_arc, (10, 99.8))
+    axes[0].imshow(
+        wavecal.arc_image,
+        origin="lower",
+        cmap="gray",
+        vmin=lower,
+        vmax=upper,
+        aspect="auto",
+    )
+    for trace in product.traces:
+        axes[0].plot(trace.x, trace.y, color="tab:red", linewidth=0.25, alpha=0.7)
+    axes[0].set(title="Measured 2-D line traces", xlabel="Column", ylabel="Row")
+    colors = np.where(product.slope_fit_used, "tab:blue", "tab:red")
+    axes[1].scatter(x_mid, residual, c=colors, s=15)
+    axes[1].axhline(0, color="black", linewidth=0.8)
+    axes[1].set(title="Slope-surface residuals", xlabel="Detector column", ylabel="Slope residual")
+    arc_values = rectified.image[np.isfinite(rectified.image)]
+    arc_lower, arc_upper = np.percentile(arc_values, (10, 99.8))
+    axes[2].imshow(
+        rectified.image,
+        origin="lower",
+        cmap="gray",
+        vmin=arc_lower,
+        vmax=arc_upper,
+        aspect="auto",
+        extent=(
+            rectified.wavelength_micron[0],
+            rectified.wavelength_micron[-1],
+            rectified.spatial_arcsec[0],
+            rectified.spatial_arcsec[-1],
+        ),
+    )
+    axes[2].set(
+        title=f"Rectified arc, order {rectified.order}",
+        xlabel="Wavelength (µm)",
+        ylabel="Slit position (arcsec)",
+    )
+    figure.savefig(plot_path, dpi=180)
+    plt.close(figure)
+
+    trace_rms = np.array([trace.rms_pixels for trace in product.traces])
+    metrics = {
+        "mode": wavecal.mode,
+        "trace_count": len(product.traces),
+        "slope_fit_used_count": int(np.count_nonzero(product.slope_fit_used)),
+        "trace_rms_pixel_percentiles": {
+            str(percentile): float(value)
+            for percentile, value in zip(
+                (0, 25, 50, 75, 100),
+                np.percentile(trace_rms, (0, 25, 50, 75, 100)),
+                strict=True,
+            )
+        },
+        "slope_residual_rms": float(np.sqrt(np.mean(residual[product.slope_fit_used] ** 2))),
+        "slope_coefficients": product.slope_coefficients.tolist(),
+        "rectified_shapes": {
+            str(geometry.order): list(geometry.x_index.shape) for geometry in product.geometries
+        },
+    }
+    metrics_path.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+    return plot_path, metrics_path
+
+
+def write_extraction_qa(
+    product: ExtractedExposure,
+    output_prefix: str | Path,
+) -> tuple[Path, Path]:
+    """Write aperture, trace, and extracted-spectrum QA for one exposure."""
+
+    prefix = Path(output_prefix)
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    plot_path = prefix.with_suffix(".png")
+    metrics_path = prefix.with_suffix(".json")
+    orders = np.array([aperture.order for aperture in product.apertures])
+    positions = np.array([aperture.position_arcsec for aperture in product.apertures])
+    fwhm = np.array([aperture.fwhm_arcsec for aperture in product.apertures])
+    trace_rms = np.array([trace.rms_arcsec for trace in product.traces])
+
+    figure, axes = plt.subplots(2, 2, figsize=(13, 9), constrained_layout=True)
+    profile_grid = np.stack([profile.normalized_flux for profile in product.profiles])
+    spatial = product.profiles[0].spatial_arcsec
+    profile_limit = np.nanpercentile(np.abs(profile_grid), 99)
+    axes[0, 0].imshow(
+        profile_grid,
+        origin="lower",
+        aspect="auto",
+        cmap="coolwarm",
+        vmin=-profile_limit,
+        vmax=profile_limit,
+        extent=(spatial[0], spatial[-1], orders[0] - 0.5, orders[-1] + 0.5),
+    )
+    axes[0, 0].plot(positions, orders, color="black", marker="o", markersize=2, linewidth=0.7)
+    axes[0, 0].set(
+        xlabel="Slit position (arcsec)",
+        ylabel="Order",
+        title="Spatial profiles and apertures",
+    )
+    axes[0, 1].plot(orders, fwhm, marker="o", markersize=3)
+    axes[0, 1].set(xlabel="Order", ylabel="FWHM (arcsec)", title="Spatial-profile width")
+    axes[1, 0].semilogy(orders, trace_rms, marker="o", markersize=3)
+    axes[1, 0].set(xlabel="Order", ylabel="RMS (arcsec)", title="Trace residuals")
+    for order in product.orders:
+        finite = np.isfinite(order.flux)
+        if not np.any(finite):
+            continue
+        scale = np.nanmedian(order.flux[finite])
+        if scale != 0:
+            axes[1, 1].plot(
+                order.wavelength_micron[finite],
+                order.flux[finite] / scale,
+                linewidth=0.5,
+            )
+    axes[1, 1].set(
+        xlabel="Wavelength (µm)",
+        ylabel="Median-normalized flux",
+        title="Extracted orders",
+    )
+    for axis in axes.ravel():
+        axis.grid(alpha=0.2)
+    figure.suptitle(product.source_path.name)
+    figure.savefig(plot_path, dpi=180)
+    plt.close(figure)
+
+    finite_fraction = {
+        str(order.order): float(np.mean(np.isfinite(order.flux))) for order in product.orders
+    }
+    median_snr = {
+        str(order.order): float(np.nanmedian(order.flux / order.uncertainty))
+        for order in product.orders
+    }
+    metrics = {
+        "input_file": product.source_path.name,
+        "order_count": len(product.orders),
+        "valid_aperture_count": sum(aperture.valid for aperture in product.apertures),
+        "valid_trace_count": sum(trace.valid for trace in product.traces),
+        "aperture_position_arcsec": {
+            str(aperture.order): aperture.position_arcsec for aperture in product.apertures
+        },
+        "aperture_fwhm_arcsec": {
+            str(aperture.order): aperture.fwhm_arcsec for aperture in product.apertures
+        },
+        "trace_rms_arcsec": {str(trace.order): trace.rms_arcsec for trace in product.traces},
+        "finite_flux_fraction": finite_fraction,
+        "median_signal_to_noise": median_snr,
+    }
+    metrics_path.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+    return plot_path, metrics_path
+
+
+def write_combination_qa(
+    product: CombinedSpectrum,
+    output_prefix: str | Path,
+) -> tuple[Path, Path]:
+    """Write combined-order spectra, signal-to-noise, and scaling QA."""
+
+    prefix = Path(output_prefix)
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    plot_path = prefix.with_suffix(".png")
+    metrics_path = prefix.with_suffix(".json")
+    figure, axes = plt.subplots(2, 1, figsize=(12, 8), constrained_layout=True)
+    median_snr: dict[str, float] = {}
+    finite_fraction: dict[str, float] = {}
+    for order in product.orders:
+        good = (order.mask == 0) & np.isfinite(order.flux) & np.isfinite(order.uncertainty)
+        finite_fraction[str(order.order)] = float(np.mean(good))
+        if not np.any(good):
+            continue
+        scale = np.nanmedian(order.flux[good])
+        axes[0].plot(
+            order.wavelength_micron[good],
+            order.flux[good] / scale,
+            linewidth=0.5,
+        )
+        snr = order.flux[good] / order.uncertainty[good]
+        median_snr[str(order.order)] = float(np.nanmedian(snr))
+        axes[1].plot(order.wavelength_micron[good], snr, linewidth=0.5)
+    axes[0].set(ylabel="Median-normalized flux", title="Combined orders")
+    axes[1].set(xlabel="Wavelength (µm)", ylabel="Signal-to-noise")
+    for axis in axes:
+        axis.grid(alpha=0.2)
+    figure.suptitle(f"{len(product.input_files)} spectra; scale order {product.scale_order}")
+    figure.savefig(plot_path, dpi=180)
+    plt.close(figure)
+    metrics = {
+        "input_files": [path.name for path in product.input_files],
+        "scale_order": product.scale_order,
+        "scale_factors": product.scale_factors.tolist(),
+        "sigma_clip": product.sigma_clip,
+        "finite_fraction": finite_fraction,
+        "median_signal_to_noise": median_snr,
     }
     metrics_path.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
     return plot_path, metrics_path

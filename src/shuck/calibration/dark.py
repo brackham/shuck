@@ -24,6 +24,7 @@ class MasterDark:
     input_files: tuple[Path, ...]
     sigma_clip: float
     rejected_fraction: float
+    detector_configuration: tuple[float, int, int] | None = None
     image_unit: str = "DN/s"
     variance_unit: str = "(DN/s)^2"
 
@@ -95,6 +96,7 @@ def build_master_dark(
         input_files=paths,
         sigma_clip=sigma_clip,
         rejected_fraction=rejected_fraction,
+        detector_configuration=configuration,
     )
 
 
@@ -110,6 +112,10 @@ def write_master_dark(product: MasterDark, path: str | Path, *, dark_id: str) ->
     header["NINPUTS"] = (len(product.input_files), "number of raw dark frames")
     header["SIGCLIP"] = (product.sigma_clip, "MAD sigma clipping threshold")
     header["REJFRAC"] = (product.rejected_fraction, "fraction of initially good samples rejected")
+    if product.detector_configuration is not None:
+        header["ITIME"] = product.detector_configuration[0]
+        header["NDR"] = product.detector_configuration[1]
+        header["COADDS"] = product.detector_configuration[2]
     header["BUNIT"] = product.image_unit
     for source in product.input_files:
         header.add_history(f"INPUT {source.name}")

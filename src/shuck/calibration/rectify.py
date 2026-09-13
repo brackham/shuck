@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
+from astropy.io import fits
 from scipy import ndimage
 
 from shuck.calibration.flat import NormalizedFlat, _robust_polynomial_fit
@@ -372,15 +374,26 @@ def rectify_order(
         cval=np.nan,
         prefilter=False,
     )
-    # Preserve discrete bit patterns with nearest-neighbor sampling.
-    rectified_mask = ndimage.map_coordinates(
-        np.asarray(mask, dtype=np.uint16),
-        coordinates,
-        order=0,
-        mode="constant",
-        cval=np.iinfo(np.uint16).max,
-        prefilter=False,
-    ).astype(np.uint16)
+    source_mask = np.asarray(mask, dtype=np.uint16)
+    floor_x = np.floor(geometry.x_index).astype(int)
+    floor_y = np.floor(geometry.y_index).astype(int)
+    inside = (
+        (floor_x >= 0)
+        & (floor_x + 1 < source_mask.shape[1])
+        & (floor_y >= 0)
+        & (floor_y + 1 < source_mask.shape[0])
+    )
+    rectified_mask = np.full(
+        geometry.x_index.shape,
+        np.iinfo(np.uint16).max,
+        dtype=np.uint16,
+    )
+    rectified_mask[inside] = 0
+    for delta_y, delta_x in ((0, 0), (0, 1), (1, 0), (1, 1)):
+        rectified_mask[inside] |= source_mask[
+            floor_y[inside] + delta_y,
+            floor_x[inside] + delta_x,
+        ]
     invalid = ~np.isfinite(rectified_image) | ~np.isfinite(rectified_variance)
     rectified_mask[invalid] |= np.uint16(1 << 15)
     return RectifiedOrder(
@@ -391,3 +404,62 @@ def rectify_order(
         variance=rectified_variance,
         mask=rectified_mask,
     )
+
+
+def write_distortion_solution(
+    product: DistortionSolution,
+    path: str | Path,
+    *,
+    calib_id: str,
+    mode: str,
+) -> Path:
+    """Write the fitted 2DXD surface, line traces, and rectification indices."""
+
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    header = fits.Header()
+    header["SHUCKVER"] = "0.1.0.dev0"
+    header["STAGE"] = "DISTORTION_2DXD"
+    header["CALIBID"] = calib_id
+    header["MODE"] = mode
+    header["C1XDEG"] = product.slope_x_degree
+    header["C1YDEG"] = product.slope_y_degree
+    header["NTRACES"] = len(product.traces)
+    header["NFITUSED"] = int(np.count_nonzero(product.slope_fit_used))
+    for index, coefficient in enumerate(product.slope_coefficients):
+        header[f"C1_C{index:02d}"] = coefficient
+    trace_columns = [
+        fits.Column(name="ORDER", format="I", array=[trace.order for trace in product.traces]),
+        fits.Column(
+            name="WAVELENGTH_UM",
+            format="D",
+            array=[trace.wavelength_micron for trace in product.traces],
+        ),
+        fits.Column(name="XMID", format="D", array=[trace.x_mid for trace in product.traces]),
+        fits.Column(name="YMID", format="D", array=[trace.y_mid for trace in product.traces]),
+        fits.Column(name="SLOPE", format="D", array=[trace.slope for trace in product.traces]),
+        fits.Column(
+            name="RMS_PIX",
+            format="D",
+            array=[trace.rms_pixels for trace in product.traces],
+        ),
+        fits.Column(name="USED", format="L", array=product.slope_fit_used),
+    ]
+    hdus: list[fits.hdu.base.ExtensionHDU] = [
+        fits.PrimaryHDU(header=header),
+        fits.BinTableHDU.from_columns(trace_columns, name="TRACES"),
+    ]
+    for geometry in product.geometries:
+        coordinates = np.stack((geometry.x_index, geometry.y_index)).astype(np.float32)
+        extension = fits.ImageHDU(coordinates, name=f"RECT{geometry.order:03d}")
+        extension.header["ORDER"] = geometry.order
+        extension.header["XSTART"] = geometry.reference_pixel[0]
+        extension.header["XSTOP"] = geometry.reference_pixel[-1]
+        extension.header["WSTART"] = geometry.wavelength_micron[0]
+        extension.header["WSTOP"] = geometry.wavelength_micron[-1]
+        extension.header["SSTART"] = geometry.spatial_arcsec[0]
+        extension.header["SSTOP"] = geometry.spatial_arcsec[-1]
+        extension.header["DS"] = np.median(np.diff(geometry.spatial_arcsec))
+        hdus.append(extension)
+    fits.HDUList(hdus).writeto(output, overwrite=True, checksum=True)
+    return output
