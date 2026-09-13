@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from shuck.calibration.flat import NormalizedFlat
+from shuck.calibration.wavecal import WavelengthSolution
 
 _matplotlib_cache = Path(tempfile.gettempdir()) / "shuck-matplotlib"
 _matplotlib_cache.mkdir(parents=True, exist_ok=True)
@@ -112,6 +113,68 @@ def write_flat_qa(product: NormalizedFlat, output_prefix: str | Path) -> tuple[P
             for order, rms in zip(product.orders, product.order_rms, strict=True)
         },
         "flagged_fraction": float(np.mean(product.mask != 0)),
+    }
+    metrics_path.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+    return plot_path, metrics_path
+
+
+def write_wavecal_qa(product: WavelengthSolution, output_prefix: str | Path) -> tuple[Path, Path]:
+    """Write SpeXTool-purpose-equivalent 1DXD residual QA and metrics."""
+
+    prefix = Path(output_prefix)
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    plot_path = prefix.with_suffix(".png")
+    metrics_path = prefix.with_suffix(".json")
+    lines = product.line_measurements
+    orders = np.array([line.order for line in lines])
+    pixels = np.array([line.fitted_position for line in lines])
+    residuals = np.array([line.residual_angstrom for line in lines])
+    found = np.array([line.found for line in lines])
+    used = np.array([line.used for line in lines])
+
+    figure, axes = plt.subplots(2, 1, figsize=(10, 8), constrained_layout=True)
+    for axis, x, label in (
+        (axes[0], orders, "Order"),
+        (axes[1], pixels, "Detector column"),
+    ):
+        axis.scatter(x[found & ~used], residuals[found & ~used], marker="x", color="tab:red")
+        axis.scatter(x[used], residuals[used], s=16, color="tab:blue")
+        axis.axhline(0, color="black", linewidth=0.8)
+        axis.axhline(product.rms_angstrom, color="gray", linestyle="--", linewidth=0.8)
+        axis.axhline(-product.rms_angstrom, color="gray", linestyle="--", linewidth=0.8)
+        axis.set(xlabel=label, ylabel="Data − model (Å)")
+        axis.grid(alpha=0.2)
+    axes[0].set_title(
+        f"{product.mode} 1DXD: RMS={product.rms_angstrom:.4f} Å, "
+        f"offset={product.cross_correlation_offset:+.3f} px"
+    )
+    figure.savefig(plot_path, dpi=180)
+    plt.close(figure)
+
+    accepted = residuals[used]
+    metrics = {
+        "mode": product.mode,
+        "input_files": [path.name for path in product.input_files],
+        "cross_correlation_offset_pixels": product.cross_correlation_offset,
+        "rms_angstrom": product.rms_angstrom,
+        "line_count": len(lines),
+        "found_count": int(np.count_nonzero(found)),
+        "used_count": int(np.count_nonzero(used)),
+        "accepted_residual_percentiles_angstrom": {
+            str(percentile): float(value)
+            for percentile, value in zip(
+                (0, 16, 50, 84, 100),
+                np.percentile(accepted, (0, 16, 50, 84, 100)),
+                strict=True,
+            )
+        },
+        "wavelength_ranges_micron": {
+            str(int(order)): [
+                float(product.wavelength(int(order), np.array([xrange[0]]))[0]),
+                float(product.wavelength(int(order), np.array([xrange[1]]))[0]),
+            ]
+            for order, xrange in zip(product.orders, product.xranges, strict=True)
+        },
     }
     metrics_path.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
     return plot_path, metrics_path
