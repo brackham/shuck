@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from shuck.control import (
+    ControlFile,
     ControlFileError,
     build_setup_control,
     parse_control_file,
@@ -15,6 +16,7 @@ from shuck.control import (
     write_control_file,
 )
 from shuck.io import write_fits_observation_log
+from shuck.pipeline import run_pipeline
 
 STAGES = ("calibrate", "extract", "combine", "telluric", "merge")
 
@@ -94,30 +96,69 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"Review required: {len(result.review_notes)} note(s) are recorded in the file.")
         return 0
 
-    if not _preflight(args.control_file):
+    control = _preflight_control(args.control_file, allow_standard_placeholders=True)
+    if control is None:
         return 2
-    raise NotImplementedError(f"Command {args.command!r} is not implemented yet.")
+    if args.command in {"calibrate", "extract", "combine"}:
+        try:
+            result = run_pipeline(control, through=args.command)
+        except (OSError, ValueError, RuntimeError) as exception:
+            print(f"shuck: error: {exception}", file=sys.stderr)
+            return 2
+        print(f"Wrote pipeline summary {result.summary_file}")
+        return 0
+    print(f"shuck: error: command {args.command!r} is not implemented yet", file=sys.stderr)
+    return 2
 
 
 def shuckit_main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="shuckit")
     parser.add_argument("control_file")
     args = parser.parse_args(argv)
-    if not _preflight(args.control_file):
+    control = _preflight_control(args.control_file, allow_standard_placeholders=True)
+    if control is None:
         return 2
-    raise NotImplementedError(f"Full reduction for {args.control_file!r} is not implemented yet.")
+    try:
+        result = run_pipeline(control, through="combine")
+    except (OSError, ValueError, RuntimeError) as exception:
+        print(f"shuck: error: {exception}", file=sys.stderr)
+        return 2
+    print(f"Wrote pipeline summary {result.summary_file}")
+    print(
+        "shuck: warning: reduction currently stops after spectral combination; "
+        "telluric correction and merging are not yet implemented",
+        file=sys.stderr,
+    )
+    return 0
 
 
 def _preflight(path: str | Path) -> bool:
+    return _preflight_control(path) is not None
+
+
+def _preflight_control(
+    path: str | Path,
+    *,
+    allow_standard_placeholders: bool = False,
+) -> ControlFile | None:
     try:
         control = parse_control_file(path)
     except ControlFileError as exception:
         print(f"shuck: error: {exception}", file=sys.stderr)
-        return False
+        return None
     report = validate_control_file(control)
+    blocking = []
     for diagnostic in report.diagnostics:
+        deferred_standard_metadata = (
+            allow_standard_placeholders
+            and diagnostic.code == "placeholder"
+            and diagnostic.message.startswith("Standard ")
+        )
+        severity = "warning" if deferred_standard_metadata else diagnostic.severity.value
         print(
-            f"shuck: {diagnostic.severity.value}: [{diagnostic.code}] {diagnostic.message}",
+            f"shuck: {severity}: [{diagnostic.code}] {diagnostic.message}",
             file=sys.stderr,
         )
-    return report.ok
+        if diagnostic.severity.value == "error" and not deferred_standard_metadata:
+            blocking.append(diagnostic)
+    return control if not blocking else None
