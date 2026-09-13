@@ -22,7 +22,7 @@ from shuck.io import read_ishell_raw
 
 @dataclass(frozen=True)
 class WavecalInfo:
-    """Mode-specific 1DXD metadata distributed with SpeXTool."""
+    """Mode-specific 2DXD metadata distributed with SpeXTool."""
 
     mode: str
     orders: np.ndarray
@@ -35,6 +35,12 @@ class WavecalInfo:
     extraction_aperture_arcsec: float
     line_list_path: Path
     reference_coefficients: np.ndarray
+    line_degree: int
+    find_y_step: int
+    find_y_sum: int
+    generate_y_step: int
+    c1_x_degree: int
+    c1_y_degree: int
     source_path: Path
 
 
@@ -130,6 +136,12 @@ def load_wavecal_info(spextool_directory: str | Path, mode: str) -> WavecalInfo:
         extraction_aperture_arcsec=float(header["EXTAP"]),
         line_list_path=data_directory / header["LINELIST"].strip(),
         reference_coefficients=coefficients,
+        line_degree=int(header["LINEDEG"]),
+        find_y_step=int(header["FNDYSTEP"]),
+        find_y_sum=int(header["FNDYSUM"]),
+        generate_y_step=int(header["GENYSTEP"]),
+        c1_x_degree=int(header["C1XDEG"]),
+        c1_y_degree=int(header["C1YDEG"]),
         source_path=path,
     )
 
@@ -316,45 +328,53 @@ def _polynomial_design(x: np.ndarray, y: np.ndarray, x_degree: int, y_degree: in
     )
 
 
-def _robust_fit_wavelength(
+def _robust_fit_polynomial_2d(
     x: np.ndarray,
-    order: np.ndarray,
-    scaled_wavelength: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
     x_degree: int,
-    order_degree: int,
+    y_degree: int,
+    *,
+    threshold: float = 3.0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    good = np.isfinite(x) & np.isfinite(order) & np.isfinite(scaled_wavelength)
+    """Fit a clipped 2-D polynomial without losing precision to raw coordinates."""
+
+    good = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+    if np.count_nonzero(good) < (x_degree + 1) * (y_degree + 1):
+        raise ValueError("too few finite samples for 2-D polynomial fit")
     x_center = float(np.mean(x[good]))
     x_scale = float(np.std(x[good]))
-    order_center = float(np.mean(order[good]))
-    order_scale = float(np.std(order[good]))
+    y_center = float(np.mean(y[good]))
+    y_scale = float(np.std(y[good]))
+    if x_scale == 0 or y_scale == 0:
+        raise ValueError("2-D polynomial coordinates must span both dimensions")
     normalized_x = (x - x_center) / x_scale
-    normalized_order = (order - order_center) / order_scale
-    design = _polynomial_design(normalized_x, normalized_order, x_degree, order_degree)
+    normalized_y = (y - y_center) / y_scale
+    design = _polynomial_design(normalized_x, normalized_y, x_degree, y_degree)
     for _ in range(10):
-        normalized_coefficients, *_ = np.linalg.lstsq(
-            design[good], scaled_wavelength[good], rcond=None
-        )
-        residual = scaled_wavelength - design @ normalized_coefficients
+        normalized_coefficients, *_ = np.linalg.lstsq(design[good], z[good], rcond=None)
+        residual = z - design @ normalized_coefficients
         median = np.median(residual[good])
         mad = 1.482 * np.median(np.abs(residual[good] - median))
         if mad == 0:
             break
-        updated = good & (np.abs((residual - median) / mad) <= 3)
+        updated = good & (np.abs((residual - median) / mad) <= threshold)
+        if np.count_nonzero(updated) < design.shape[1]:
+            break
         if np.array_equal(updated, good):
             break
         good = updated
-    normalized_coefficients, *_ = np.linalg.lstsq(design[good], scaled_wavelength[good], rcond=None)
-    normalized_coefficients = normalized_coefficients.reshape(order_degree + 1, x_degree + 1)
+    normalized_coefficients, *_ = np.linalg.lstsq(design[good], z[good], rcond=None)
+    normalized_coefficients = normalized_coefficients.reshape(y_degree + 1, x_degree + 1)
     raw_coefficients = np.zeros_like(normalized_coefficients)
-    for order_exponent in range(order_degree + 1):
+    for y_exponent in range(y_degree + 1):
         for x_exponent in range(x_degree + 1):
-            coefficient = normalized_coefficients[order_exponent, x_exponent]
-            for raw_order_exponent in range(order_exponent + 1):
-                order_factor = (
-                    comb(order_exponent, raw_order_exponent)
-                    * (-order_center) ** (order_exponent - raw_order_exponent)
-                    / order_scale**order_exponent
+            coefficient = normalized_coefficients[y_exponent, x_exponent]
+            for raw_y_exponent in range(y_exponent + 1):
+                y_factor = (
+                    comb(y_exponent, raw_y_exponent)
+                    * (-y_center) ** (y_exponent - raw_y_exponent)
+                    / y_scale**y_exponent
                 )
                 for raw_x_exponent in range(x_exponent + 1):
                     x_factor = (
@@ -362,10 +382,27 @@ def _robust_fit_wavelength(
                         * (-x_center) ** (x_exponent - raw_x_exponent)
                         / x_scale**x_exponent
                     )
-                    raw_coefficients[raw_order_exponent, raw_x_exponent] += (
-                        coefficient * order_factor * x_factor
+                    raw_coefficients[raw_y_exponent, raw_x_exponent] += (
+                        coefficient * y_factor * x_factor
                     )
     return raw_coefficients.ravel(), good
+
+
+def _robust_fit_wavelength(
+    x: np.ndarray,
+    order: np.ndarray,
+    scaled_wavelength: np.ndarray,
+    x_degree: int,
+    order_degree: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    return _robust_fit_polynomial_2d(
+        x,
+        order,
+        scaled_wavelength,
+        x_degree,
+        order_degree,
+        threshold=3.0,
+    )
 
 
 def build_wavelength_solution(
