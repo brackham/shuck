@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 from astropy.io import fits
 
+from shuck.combine import CombinedObservationMetadata
 from shuck.extraction.optimal import ExtractedOrder
 
 
@@ -21,6 +22,13 @@ class MergedSpectrum:
     mask: np.ndarray
     orders: tuple[int, ...]
     overlap_ranges: tuple[tuple[float, float] | None, ...]
+    science_group: str | None = None
+    standard_group: str | None = None
+    science_files: tuple[Path, ...] = ()
+    standard_files: tuple[Path, ...] = ()
+    science_airmass: float | None = None
+    standard_airmass: float | None = None
+    observation_metadata: CombinedObservationMetadata | None = None
 
 
 def _trim_order(order: ExtractedOrder) -> tuple[np.ndarray, ...]:
@@ -67,9 +75,8 @@ def _interpolate_order(
     left = np.where(exact, right, np.maximum(right - 1, 0))
     alpha = np.zeros(right.shape, dtype=np.float64)
     different = right != left
-    alpha[different] = (
-        (output_wavelength[inside][different] - wavelength[left[different]])
-        / (wavelength[right[different]] - wavelength[left[different]])
+    alpha[different] = (output_wavelength[inside][different] - wavelength[left[different]]) / (
+        wavelength[right[different]] - wavelength[left[different]]
     )
     output_flux[positions] = flux[left] + alpha * (flux[right] - flux[left])
 
@@ -91,51 +98,160 @@ def _merge_pair(
 ) -> tuple[ExtractedOrder, tuple[float, float] | None]:
     w1, f1, e1, m1 = _trim_order(anchor)
     w2, f2, e2, m2 = _trim_order(addition)
-    lower = max(w1[0], w2[0])
-    upper = min(w1[-1], w2[-1])
-    overlap = (float(lower), float(upper)) if lower <= upper else None
+    minimum1, maximum1 = w1[0], w1[-1]
+    minimum2, maximum2 = w2[0], w2[-1]
+    if minimum2 > maximum1:
+        output_wavelength = np.concatenate((w1, w2))
+        output_flux = np.concatenate((f1[:-1], [np.nan, np.nan], f2[1:]))
+        output_uncertainty = np.concatenate((e1[:-1], [np.nan, np.nan], e2[1:]))
+        output_mask = np.concatenate((m1[:-1], [0, 0], m2[1:])).astype(np.uint16)
+        return _merged_order(
+            anchor.order, output_wavelength, output_flux, output_uncertainty, output_mask
+        ), None
+    if minimum1 > maximum2:
+        output_wavelength = np.concatenate((w2, w1))
+        output_flux = np.concatenate((f2[:-1], [np.nan, np.nan], f1[1:]))
+        output_uncertainty = np.concatenate((e2[:-1], [np.nan, np.nan], e1[1:]))
+        output_mask = np.concatenate((m2[:-1], [0, 0], m1[1:])).astype(np.uint16)
+        return _merged_order(
+            anchor.order, output_wavelength, output_flux, output_uncertainty, output_mask
+        ), None
 
-    i2f, i2e, i2m = _interpolate_order(w2, f2, e2, m2, w1)
+    interpolation_wavelength = w2
+    interpolation_flux = f2
+    interpolation_uncertainty = e2
+    interpolation_mask = m2
+    position = "left" if minimum2 < minimum1 else "right"
+    if minimum2 >= minimum1 and maximum2 <= maximum1:
+        position = "inside"
+        interior = (w2 > minimum1) & (w2 < maximum1)
+        interpolation_wavelength = w2[interior]
+        interpolation_flux = f2[interior]
+        interpolation_uncertainty = e2[interior]
+        interpolation_mask = m2[interior]
+        if interpolation_wavelength.size < 2:
+            raise ValueError("contained order has fewer than two interior wavelength samples")
+
+    i2f, i2e, i2m = _interpolate_order(
+        interpolation_wavelength,
+        interpolation_flux,
+        interpolation_uncertainty,
+        interpolation_mask,
+        w1,
+    )
     valid1 = np.isfinite(f1) & np.isfinite(e1) & (e1 > 0)
     valid2 = np.isfinite(i2f) & np.isfinite(i2e) & (i2e > 0)
-    merged_flux = f1.copy()
-    merged_uncertainty = e1.copy()
-    merged_mask = m1.copy()
+    middle_flux = f1.copy()
+    middle_uncertainty = e1.copy()
+    middle_mask = m1.copy()
     both = valid1 & valid2
     if np.any(both):
         weight1 = 1.0 / e1[both] ** 2
         weight2 = 1.0 / i2e[both] ** 2
-        merged_flux[both] = (f1[both] * weight1 + i2f[both] * weight2) / (
-            weight1 + weight2
-        )
-        merged_uncertainty[both] = np.sqrt(1.0 / (weight1 + weight2))
-        merged_mask[both] = m1[both] | i2m[both]
+        middle_flux[both] = (f1[both] * weight1 + i2f[both] * weight2) / (weight1 + weight2)
+        middle_uncertainty[both] = np.sqrt(1.0 / (weight1 + weight2))
+        middle_mask[both] = m1[both] | i2m[both]
     only2 = ~valid1 & valid2
-    merged_flux[only2] = i2f[only2]
-    merged_uncertainty[only2] = i2e[only2]
-    merged_mask[only2] = i2m[only2]
+    middle_flux[only2] = i2f[only2]
+    middle_uncertainty[only2] = i2e[only2]
+    middle_mask[only2] = i2m[only2]
 
-    outside = (w2 < w1[0]) | (w2 > w1[-1])
-    output_wavelength = np.concatenate((w1, w2[outside]))
-    output_flux = np.concatenate((merged_flux, f2[outside]))
-    output_uncertainty = np.concatenate((merged_uncertainty, e2[outside]))
-    output_mask = np.concatenate((merged_mask, m2[outside]))
-    sorting = np.argsort(output_wavelength, kind="stable")
-    return (
-        ExtractedOrder(
-            order=anchor.order,
-            wavelength_micron=output_wavelength[sorting],
-            flux=output_flux[sorting],
-            uncertainty=output_uncertainty[sorting],
-            mask=output_mask[sorting],
-            trace_arcsec=np.full(output_wavelength.size, np.nan),
-            background=np.full(output_wavelength.size, np.nan),
-        ),
-        overlap,
+    finite_interpolation = np.flatnonzero(np.isfinite(i2f))
+    if finite_interpolation.size == 0:
+        raise ValueError("overlapping orders have no finite interpolated samples")
+    if position == "right":
+        middle_indices = np.arange(finite_interpolation[0], w1.size)
+        left_indices = np.flatnonzero(w1 < minimum2)
+        right_candidates = np.flatnonzero(w2 >= np.max(w1[middle_indices]))
+        right_indices = right_candidates[1:]
+        segments = (
+            (w1[left_indices], f1[left_indices], e1[left_indices], m1[left_indices]),
+            (
+                w1[middle_indices],
+                middle_flux[middle_indices],
+                middle_uncertainty[middle_indices],
+                middle_mask[middle_indices],
+            ),
+            (w2[right_indices], f2[right_indices], e2[right_indices], m2[right_indices]),
+        )
+        overlap = (float(minimum2), float(np.max(w1[middle_indices])))
+    elif position == "left":
+        middle_indices = np.arange(0, finite_interpolation[-1] + 1)
+        left_candidates = np.flatnonzero(w2 <= minimum1)
+        left_indices = left_candidates[:-1]
+        right_indices = np.flatnonzero(w1 > np.max(w1[middle_indices]))
+        segments = (
+            (w2[left_indices], f2[left_indices], e2[left_indices], m2[left_indices]),
+            (
+                w1[middle_indices],
+                middle_flux[middle_indices],
+                middle_uncertainty[middle_indices],
+                middle_mask[middle_indices],
+            ),
+            (w1[right_indices], f1[right_indices], e1[right_indices], m1[right_indices]),
+        )
+        overlap = (float(minimum1), float(np.max(w1[middle_indices])))
+    else:
+        middle_indices = np.arange(finite_interpolation[0], finite_interpolation[-1] + 1)
+        left_candidates = np.flatnonzero(w1 <= minimum2)
+        left_indices = left_candidates[:-1]
+        right_indices = np.flatnonzero(w1 > maximum2)
+        segments = (
+            (w1[left_indices], f1[left_indices], e1[left_indices], m1[left_indices]),
+            (
+                w1[middle_indices],
+                middle_flux[middle_indices],
+                middle_uncertainty[middle_indices],
+                middle_mask[middle_indices],
+            ),
+            (w1[right_indices], f1[right_indices], e1[right_indices], m1[right_indices]),
+        )
+        overlap = (float(minimum1), float(maximum2))
+
+    output_wavelength = np.concatenate([segment[0] for segment in segments])
+    output_flux = np.concatenate([segment[1] for segment in segments])
+    output_uncertainty = np.concatenate([segment[2] for segment in segments])
+    output_mask = np.concatenate([segment[3] for segment in segments])
+    return _merged_order(
+        anchor.order,
+        output_wavelength,
+        output_flux,
+        output_uncertainty,
+        output_mask,
+    ), overlap
+
+
+def _merged_order(
+    order: int,
+    wavelength: np.ndarray,
+    flux: np.ndarray,
+    uncertainty: np.ndarray,
+    mask: np.ndarray,
+) -> ExtractedOrder:
+    """Package one intermediate ``mc_mergespec.pro``-equivalent result."""
+
+    return ExtractedOrder(
+        order=order,
+        wavelength_micron=np.asarray(wavelength, dtype=np.float64),
+        flux=np.asarray(flux, dtype=np.float64),
+        uncertainty=np.asarray(uncertainty, dtype=np.float64),
+        mask=np.asarray(mask, dtype=np.uint16),
+        trace_arcsec=np.full(wavelength.size, np.nan),
+        background=np.full(wavelength.size, np.nan),
     )
 
 
-def merge_orders(orders: tuple[ExtractedOrder, ...]) -> MergedSpectrum:
+def merge_orders(
+    orders: tuple[ExtractedOrder, ...],
+    *,
+    science_group: str | None = None,
+    standard_group: str | None = None,
+    science_files: tuple[Path, ...] = (),
+    standard_files: tuple[Path, ...] = (),
+    science_airmass: float | None = None,
+    standard_airmass: float | None = None,
+    observation_metadata: CombinedObservationMetadata | None = None,
+) -> MergedSpectrum:
     """Merge adjacent orders following SpeXTool ``mc_mergespec.pro``.
 
     The first order is the initial wavelength-grid anchor. Each subsequent
@@ -158,6 +274,13 @@ def merge_orders(orders: tuple[ExtractedOrder, ...]) -> MergedSpectrum:
         mask=merged.mask,
         orders=tuple(order.order for order in orders),
         overlap_ranges=tuple(overlaps),
+        science_group=science_group,
+        standard_group=standard_group,
+        science_files=science_files,
+        standard_files=standard_files,
+        science_airmass=science_airmass,
+        standard_airmass=standard_airmass,
+        observation_metadata=observation_metadata,
     )
 
 
@@ -171,13 +294,42 @@ def write_merged_spectrum(product: MergedSpectrum, path: str | Path) -> Path:
     header["STAGE"] = "MERGED"
     header["NORDERS"] = len(product.orders)
     header["ORDERS"] = ",".join(str(value) for value in product.orders)
+    if product.science_group is not None:
+        header["SCIGRP"] = product.science_group
+    if product.standard_group is not None:
+        header["STDGRP"] = product.standard_group
+    if product.science_airmass is not None:
+        header["AIRMASS"] = product.science_airmass
+    if product.standard_airmass is not None:
+        header["STDAMASS"] = product.standard_airmass
+    if product.science_airmass is not None and product.standard_airmass is not None:
+        header["AMDIFF"] = product.standard_airmass - product.science_airmass
+    if product.observation_metadata is not None:
+        header["OBSMODE"] = product.observation_metadata.mode
+        header["AVE_MJD"] = product.observation_metadata.mean_mjd
+        header["RA"] = product.observation_metadata.ra
+        header["DEC"] = product.observation_metadata.dec
+        header["SLTW_ARC"] = product.observation_metadata.slit_width_arcsec
+        header["PLTSCALE"] = product.observation_metadata.plate_scale_arcsec_per_pixel
+    for source in product.science_files:
+        header.add_history(f"SCIENCE {source.name}")
+    for source in product.standard_files:
+        header.add_history(f"STANDARD {source.name}")
     table = fits.BinTableHDU.from_columns(
         [
+            fits.Column(name="WAVELENGTH", format="D", unit="um", array=product.wavelength_micron),
             fits.Column(
-                name="WAVELENGTH", format="D", unit="um", array=product.wavelength_micron
+                name="FLUX",
+                format="D",
+                unit="erg s-1 cm-2 Angstrom-1",
+                array=product.flux,
             ),
-            fits.Column(name="FLUX", format="D", array=product.flux),
-            fits.Column(name="UNCERTAINTY", format="D", array=product.uncertainty),
+            fits.Column(
+                name="UNCERTAINTY",
+                format="D",
+                unit="erg s-1 cm-2 Angstrom-1",
+                array=product.uncertainty,
+            ),
             fits.Column(name="MASK", format="I", array=product.mask),
         ],
         name="SPECTRUM",

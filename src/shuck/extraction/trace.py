@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -49,10 +50,12 @@ def trace_order(
     for index, column in enumerate(columns):
         low = max(0, column - half_width)
         high = min(order.image.shape[1], column + half_width + 1)
-        collapsed = np.nanmedian(
-            np.where(order.mask[:, low:high] == 0, order.image[:, low:high], np.nan),
-            axis=1,
-        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="All-NaN slice encountered")
+            collapsed = np.nanmedian(
+                np.where(order.mask[:, low:high] == 0, order.image[:, low:high], np.nan),
+                axis=1,
+            )
         center, _, _, found = fit_spatial_peak(
             order.spatial_arcsec,
             aperture.sign * collapsed,

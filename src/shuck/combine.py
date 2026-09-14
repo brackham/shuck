@@ -81,7 +81,12 @@ def determine_scale_factors(
     valid = np.asarray(masks) == 0
     if values.ndim != 2 or valid.shape != values.shape:
         raise ValueError("scaling spectra and masks must have shape (nspectrum, npixel)")
-    reference = np.nanmedian(np.where(valid, values, np.nan), axis=0)
+    reference = np.full(values.shape[1], np.nan)
+    usable_columns = np.any(valid & np.isfinite(values), axis=0)
+    reference[usable_columns] = np.nanmedian(
+        np.where(valid[:, usable_columns], values[:, usable_columns], np.nan),
+        axis=0,
+    )
     scales = np.full(values.shape[0], np.nan)
     for index in range(values.shape[0]):
         with np.errstate(divide="ignore", invalid="ignore"):

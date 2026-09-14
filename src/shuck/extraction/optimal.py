@@ -321,3 +321,52 @@ def write_extracted_exposure(product: ExtractedExposure, path: str | Path) -> Pa
         hdus.append(extension)
     fits.HDUList(hdus).writeto(output, overwrite=True, checksum=True)
     return output
+
+
+def read_extracted_exposure(
+    path: str | Path,
+    *,
+    source_path: str | Path,
+    metadata: IShellRawMetadata,
+    plate_scale_arcsec_per_pixel: float,
+) -> ExtractedExposure:
+    """Read a cached shuck extraction for combination without recomputing images."""
+
+    input_path = Path(path)
+    orders: list[ExtractedOrder] = []
+    with fits.open(input_path, mode="readonly", memmap=False, checksum=True) as hdus:
+        invalid_checksums = [
+            hdu.name for hdu in hdus if hdu.verify_checksum() != 1 or hdu.verify_datasum() != 1
+        ]
+        if invalid_checksums:
+            raise ValueError(
+                f"cached extraction has invalid FITS checksums in {invalid_checksums}: {input_path}"
+            )
+        if hdus[0].header.get("STAGE") != "EXTRACTED":
+            raise ValueError(f"cached product is not an extracted spectrum: {input_path}")
+        for hdu in hdus[1:]:
+            if not hdu.name.startswith("ORDER"):
+                continue
+            number = int(hdu.name.removeprefix("ORDER"))
+            orders.append(
+                ExtractedOrder(
+                    order=number,
+                    wavelength_micron=np.asarray(hdu.data["WAVELENGTH"], dtype=np.float64),
+                    flux=np.asarray(hdu.data["FLUX"], dtype=np.float64),
+                    uncertainty=np.asarray(hdu.data["UNCERTAINTY"], dtype=np.float64),
+                    mask=np.asarray(hdu.data["MASK"], dtype=np.uint16),
+                    trace_arcsec=np.asarray(hdu.data["TRACE"], dtype=np.float64),
+                    background=np.asarray(hdu.data["BACKGROUND"], dtype=np.float64),
+                )
+            )
+    if not orders:
+        raise ValueError(f"cached extraction contains no spectral orders: {input_path}")
+    return ExtractedExposure(
+        orders=tuple(orders),
+        profiles=(),
+        apertures=(),
+        traces=(),
+        source_path=Path(source_path),
+        metadata=metadata,
+        plate_scale_arcsec_per_pixel=plate_scale_arcsec_per_pixel,
+    )

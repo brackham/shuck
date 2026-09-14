@@ -54,6 +54,12 @@ def build_parser() -> argparse.ArgumentParser:
     for stage in STAGES:
         command = subparsers.add_parser(stage, help=f"Run the {stage} stage.")
         command.add_argument("control_file")
+        if stage != "calibrate":
+            command.add_argument(
+                "--reuse-extractions",
+                action="store_true",
+                help="Reuse current checksummed extraction products instead of recomputing them.",
+            )
 
     return parser
 
@@ -96,12 +102,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"Review required: {len(result.review_notes)} note(s) are recorded in the file.")
         return 0
 
-    control = _preflight_control(args.control_file, allow_standard_placeholders=True)
+    control = _preflight_control(
+        args.control_file,
+        allow_standard_placeholders=args.command in {"calibrate", "extract", "combine"},
+    )
     if control is None:
         return 2
-    if args.command in {"calibrate", "extract", "combine"}:
+    if args.command in STAGES:
         try:
-            result = run_pipeline(control, through=args.command)
+            result = run_pipeline(
+                control,
+                through=args.command,
+                reuse_extractions=getattr(args, "reuse_extractions", False),
+            )
         except (OSError, ValueError, RuntimeError) as exception:
             print(f"shuck: error: {exception}", file=sys.stderr)
             return 2
@@ -114,21 +127,25 @@ def main(argv: Sequence[str] | None = None) -> int:
 def shuckit_main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="shuckit")
     parser.add_argument("control_file")
+    parser.add_argument(
+        "--reuse-extractions",
+        action="store_true",
+        help="Reuse current checksummed extraction products instead of recomputing them.",
+    )
     args = parser.parse_args(argv)
-    control = _preflight_control(args.control_file, allow_standard_placeholders=True)
+    control = _preflight_control(args.control_file)
     if control is None:
         return 2
     try:
-        result = run_pipeline(control, through="combine")
+        result = run_pipeline(
+            control,
+            through="merge",
+            reuse_extractions=args.reuse_extractions,
+        )
     except (OSError, ValueError, RuntimeError) as exception:
         print(f"shuck: error: {exception}", file=sys.stderr)
         return 2
     print(f"Wrote pipeline summary {result.summary_file}")
-    print(
-        "shuck: warning: reduction currently stops after spectral combination; "
-        "telluric correction and merging are not yet implemented",
-        file=sys.stderr,
-    )
     return 0
 
 

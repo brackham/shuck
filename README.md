@@ -20,7 +20,7 @@ persistent override file; reviewed overrides are automatically applied on later 
 modifying raw FITS headers. `--write-log` optionally writes a complete derived FITS-header CSV at
 the night level and leaves any observatory `obslog.txt` untouched.
 
-Developer/power-user stage commands are also planned:
+Developer/power-user stage commands are also available:
 
 ```bash
 shuck calibrate night.shuck
@@ -32,7 +32,11 @@ shuck merge night.shuck
 
 ## Status
 
-Early porting scaffold. Scientific algorithms are not yet implemented.
+The supported v0.1 path is executable through detector correction, calibration, one-aperture
+optimal extraction, combination, A0V/Vega telluric correction, and order merging. The port has
+unit and synthetic numerical coverage and has been exercised end to end on the private 260406
+night. Direct residual comparisons with independently reduced SpeXTool products remain required
+before treating the port as science-validated.
 
 ## Development principles
 

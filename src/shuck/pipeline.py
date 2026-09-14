@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,18 +34,30 @@ from shuck.extraction.optimal import (
     ExtractedExposure,
     derive_extraction_model,
     extract_exposure,
+    read_extracted_exposure,
     write_extracted_exposure,
 )
 from shuck.extraction.preprocess import (
     combine_preprocessed_exposures,
     preprocess_exposure,
 )
+from shuck.io import read_ishell_raw_metadata
+from shuck.merge import merge_orders, write_merged_spectrum
 from shuck.qa import (
     write_combination_qa,
     write_extraction_qa,
     write_flat_qa,
+    write_merge_qa,
     write_rectification_qa,
+    write_telluric_qa,
     write_wavecal_qa,
+)
+from shuck.telluric import (
+    TelluricCorrectedSpectrum,
+    apply_telluric_correction,
+    build_telluric_correction,
+    write_corrected_spectrum,
+    write_telluric_correction,
 )
 
 
@@ -65,12 +78,14 @@ class PipelineResult:
     dark_files: tuple[Path, ...]
     extracted_files: tuple[Path, ...]
     combined_files: tuple[Path, ...]
+    telluric_files: tuple[Path, ...]
+    merged_files: tuple[Path, ...]
     qa_files: tuple[Path, ...]
     summary_file: Path
 
 
 def _directory(night: Path, configured: Path) -> Path:
-    return configured if configured.is_absolute() else night / configured
+    return configured.resolve() if configured.is_absolute() else (night / configured).resolve()
 
 
 def _raw_paths(raw_directory: Path, references: tuple[str | Placeholder, ...]) -> tuple[Path, ...]:
@@ -95,7 +110,12 @@ def _spextool_directory() -> Path:
     return directory
 
 
-def run_pipeline(control: ControlFile, *, through: str = "extract") -> PipelineResult:
+def run_pipeline(
+    control: ControlFile,
+    *,
+    through: str = "extract",
+    reuse_extractions: bool = False,
+) -> PipelineResult:
     """Run calibrated extraction from a validated format-version-1 plan.
 
     This is the non-interactive orchestration counterpart to the supported
@@ -103,7 +123,7 @@ def run_pipeline(control: ControlFile, *, through: str = "extract") -> PipelineR
     ``mc_ishellcals2dxd.pro``.
     """
 
-    if through not in {"calibrate", "extract", "combine"}:
+    if through not in {"calibrate", "extract", "combine", "telluric", "merge"}:
         raise ValueError(f"unsupported implemented pipeline endpoint {through!r}")
     if control.source_path is None:
         raise ValueError("pipeline execution requires a control file with a source path")
@@ -122,9 +142,33 @@ def run_pipeline(control: ControlFile, *, through: str = "extract") -> PipelineR
         for frame in control.data
         if frame.frametype in {FrameType.SCIENCE, FrameType.STANDARD} and frame.beam == "A"
     )
-    if through in {"extract", "combine"}:
-        calibration_ids = {frame.calib for frame in object_frames}
-        dark_ids = {frame.dark for frame in object_frames}
+    frames_by_group = defaultdict(list)
+    if through != "calibrate":
+        for frame in object_frames:
+            if frame.comb_id is None:
+                raise ValueError(f"object frame lacks combination group: {frame.filename}")
+            frames_by_group[frame.comb_id].append(frame)
+    cached_groups: set[str] = set()
+    if reuse_extractions:
+        for combination_id, frames in frames_by_group.items():
+            cache_is_current = True
+            for frame in frames:
+                if not isinstance(frame.filename, str):
+                    cache_is_current = False
+                    break
+                source = raw_directory / frame.filename
+                cached = processing_directory / f"{Path(frame.filename).stem}.extracted.fits"
+                if not cached.is_file() or cached.stat().st_mtime < source.stat().st_mtime:
+                    cache_is_current = False
+                    break
+            if cache_is_current:
+                cached_groups.add(combination_id)
+    frames_to_extract = tuple(
+        frame for frame in object_frames if frame.comb_id not in cached_groups
+    )
+    if through != "calibrate":
+        calibration_ids = {frame.calib for frame in frames_to_extract}
+        dark_ids = {frame.dark for frame in frames_to_extract}
     else:
         calibration_ids = {group.calib_id for group in control.calibrations}
         dark_ids = {group.dark_id for group in control.darks}
@@ -198,14 +242,33 @@ def run_pipeline(control: ControlFile, *, through: str = "extract") -> PipelineR
 
     extracted_files: list[Path] = []
     extracted_groups: dict[str, list[ExtractedExposure]] = defaultdict(list)
-    if through in {"extract", "combine"}:
-        frames_by_group = defaultdict(list)
-        for frame in object_frames:
-            if frame.comb_id is None:
-                raise ValueError(f"object frame lacks combination group: {frame.filename}")
-            frames_by_group[frame.comb_id].append(frame)
+    if through != "calibrate":
         completed = 0
         for combination_id, frames in frames_by_group.items():
+            if combination_id in cached_groups:
+                print(f"shuck: reusing {len(frames)} cached extractions for {combination_id}")
+                for frame in frames:
+                    if not isinstance(frame.filename, str) or frame.mode is None:
+                        raise ValueError(f"object frame has unresolved metadata: {frame.filename}")
+                    source = raw_directory / frame.filename
+                    cached = processing_directory / f"{Path(frame.filename).stem}.extracted.fits"
+                    plate_scale = load_flat_info(spextool, frame.mode).plate_scale_arcsec_per_pixel
+                    extracted_groups[combination_id].append(
+                        read_extracted_exposure(
+                            cached,
+                            source_path=source,
+                            metadata=read_ishell_raw_metadata(source),
+                            plate_scale_arcsec_per_pixel=plate_scale,
+                        )
+                    )
+                    extracted_files.append(cached)
+                    qa_prefix = qa_directory / f"extraction_{Path(frame.filename).stem}"
+                    for suffix in (".png", ".json"):
+                        qa_path = qa_prefix.with_suffix(suffix)
+                        if qa_path.is_file():
+                            qa_files.append(qa_path)
+                completed += len(frames)
+                continue
             preprocessed_group = []
             for frame in frames:
                 if not isinstance(frame.filename, str) or frame.calib is None or frame.dark is None:
@@ -251,7 +314,8 @@ def run_pipeline(control: ControlFile, *, through: str = "extract") -> PipelineR
             completed += len(frames)
 
     combined_files: list[Path] = []
-    if through == "combine":
+    combined_products = {}
+    if through in {"combine", "telluric", "merge"}:
         for combination_id, exposures in extracted_groups.items():
             modes = {frame.mode for frame in object_frames if frame.comb_id == combination_id}
             if len(modes) != 1:
@@ -272,9 +336,118 @@ def run_pipeline(control: ControlFile, *, through: str = "extract") -> PipelineR
                 combination_id=combination_id,
             )
             combined_files.append(combined_path)
+            combined_products[combination_id] = combined
             qa_files.extend(
                 write_combination_qa(combined, qa_directory / f"combination_{combination_id}")
             )
+
+    telluric_files: list[Path] = []
+    corrected_products: dict[str, TelluricCorrectedSpectrum] = {}
+    if through in {"telluric", "merge"}:
+        standards_by_target = {standard.target: standard for standard in control.standards}
+        corrections = {}
+        science_combination_ids = tuple(
+            dict.fromkeys(
+                frame.comb_id
+                for frame in object_frames
+                if frame.frametype is FrameType.SCIENCE and frame.comb_id is not None
+            )
+        )
+        for combination_id in science_combination_ids:
+            science_frames = frames_by_group[combination_id]
+            telluric_groups = {frame.telluric_group for frame in science_frames}
+            if len(telluric_groups) != 1 or None in telluric_groups:
+                raise ValueError(
+                    f"science combination {combination_id} lacks one resolved telluric group"
+                )
+            standard_group = telluric_groups.pop()
+            assert standard_group is not None
+            if standard_group not in combined_products:
+                raise ValueError(f"telluric group {standard_group} has no combined standard")
+            standard_frames = frames_by_group[standard_group]
+            standard_targets = {frame.target for frame in standard_frames}
+            if len(standard_targets) != 1 or None in standard_targets:
+                raise ValueError(f"standard group {standard_group} has ambiguous target metadata")
+            standard_target = standard_targets.pop()
+            assert standard_target is not None
+            if standard_target not in standards_by_target:
+                raise ValueError(f"no standard metadata exist for target {standard_target}")
+            standard_metadata = standards_by_target[standard_target]
+            numeric_values = (
+                standard_metadata.bmag,
+                standard_metadata.vmag,
+                standard_metadata.rv_kms,
+            )
+            if any(isinstance(value, Placeholder) for value in numeric_values):
+                raise ValueError(f"standard {standard_target} has unresolved telluric metadata")
+            if standard_group not in corrections:
+                print(f"shuck: constructing telluric correction {standard_group}")
+                correction = build_telluric_correction(
+                    combined_products[standard_group],
+                    standard_group=standard_group,
+                    b_magnitude=float(standard_metadata.bmag),
+                    v_magnitude=float(standard_metadata.vmag),
+                    radial_velocity_kms=float(standard_metadata.rv_kms),
+                    spextool_directory=spextool,
+                )
+                corrections[standard_group] = correction
+                correction_path = write_telluric_correction(
+                    correction,
+                    processing_directory / f"{standard_group}.telluric.fits",
+                )
+                telluric_files.append(correction_path)
+            correction = corrections[standard_group]
+            print(f"shuck: correcting {combination_id} with {standard_group}")
+            corrected = apply_telluric_correction(
+                combined_products[combination_id],
+                correction,
+                science_group=combination_id,
+            )
+            if (
+                corrected.science_airmass is not None
+                and corrected.standard_airmass is not None
+                and abs(corrected.standard_airmass - corrected.science_airmass) > 0.1
+            ):
+                difference = corrected.standard_airmass - corrected.science_airmass
+                print(
+                    f"shuck: warning: {combination_id} and {standard_group} differ in "
+                    f"airmass by {difference:+.3f}",
+                    file=sys.stderr,
+                )
+            corrected_products[combination_id] = corrected
+            corrected_path = write_corrected_spectrum(
+                corrected,
+                processing_directory / f"{combination_id}.corrected.fits",
+            )
+            telluric_files.append(corrected_path)
+            qa_files.extend(
+                write_telluric_qa(
+                    correction,
+                    corrected,
+                    qa_directory / f"telluric_{combination_id}",
+                )
+            )
+
+    merged_files: list[Path] = []
+    if through == "merge":
+        for combination_id, corrected in corrected_products.items():
+            print(f"shuck: merging {combination_id}")
+            merged = merge_orders(
+                corrected.orders,
+                science_group=corrected.science_group,
+                standard_group=corrected.standard_group,
+                science_files=corrected.science_files,
+                standard_files=corrected.standard_files,
+                science_airmass=corrected.science_airmass,
+                standard_airmass=corrected.standard_airmass,
+                observation_metadata=corrected.science_metadata,
+            )
+            merged_path = write_merged_spectrum(
+                merged,
+                processing_directory / f"{combination_id}.merged.fits",
+            )
+            merged_files.append(merged_path)
+            qa_files.extend(write_merge_qa(merged, qa_directory / f"merge_{combination_id}"))
 
     summary_path = processing_directory / "shuck_pipeline_summary.json"
     summary = {
@@ -284,6 +457,8 @@ def run_pipeline(control: ControlFile, *, through: str = "extract") -> PipelineR
         "dark_files": [str(path) for path in dark_files],
         "extracted_files": [str(path) for path in extracted_files],
         "combined_files": [str(path) for path in combined_files],
+        "telluric_files": [str(path) for path in telluric_files],
+        "merged_files": [str(path) for path in merged_files],
         "qa_files": [str(path) for path in qa_files],
     }
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
@@ -292,6 +467,8 @@ def run_pipeline(control: ControlFile, *, through: str = "extract") -> PipelineR
         dark_files=tuple(dark_files),
         extracted_files=tuple(extracted_files),
         combined_files=tuple(combined_files),
+        telluric_files=tuple(telluric_files),
+        merged_files=tuple(merged_files),
         qa_files=tuple(qa_files),
         summary_file=summary_path,
     )

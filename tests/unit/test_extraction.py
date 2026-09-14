@@ -1,13 +1,20 @@
+from datetime import date, time
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 
 from shuck.calibration.rectify import RectifiedOrder
-from shuck.extraction.optimal import extract_order_optimal
+from shuck.extraction.optimal import (
+    ExtractedExposure,
+    extract_order_optimal,
+    read_extracted_exposure,
+    write_extracted_exposure,
+)
 from shuck.extraction.preprocess import PreprocessedExposure, combine_preprocessed_exposures
 from shuck.extraction.profile import SpatialProfile, find_apertures, make_spatial_profile
 from shuck.extraction.trace import trace_order
+from shuck.io import IShellRawMetadata
 
 
 def _synthetic_order() -> tuple[RectifiedOrder, np.ndarray]:
@@ -112,3 +119,54 @@ def test_group_image_robustly_rejects_exposure_outlier() -> None:
     combined = combine_preprocessed_exposures(tuple(exposures))
 
     np.testing.assert_allclose(combined.orders[0].image, order.image)
+
+
+def test_extracted_fits_round_trip_supports_checked_cache(tmp_path: Path) -> None:
+    order, _ = _synthetic_order()
+    profile = make_spatial_profile(order)
+    aperture = find_apertures((profile,))[0]
+    trace = trace_order(order, aperture, degree=2)
+    extracted_order = extract_order_optimal(order, profile, aperture, trace)
+    metadata = IShellRawMetadata(
+        itime=10.0,
+        coadds=1,
+        ndr=2,
+        table_se=0.1,
+        divisor=1.0,
+        mode="J3",
+        filename="science.fits",
+        date_obs=date(2026, 4, 6),
+        time_obs=time(1, 2, 3),
+        mjd_obs=61136.0,
+        object_name="Science",
+        beam="A",
+        ra="12:00:00",
+        dec="+10:00:00",
+        airmass=1.2,
+        hour_angle="00:00:00",
+        position_angle=0.0,
+        slit_width_arcsec=0.75,
+    )
+    product = ExtractedExposure(
+        orders=(extracted_order,),
+        profiles=(profile,),
+        apertures=(aperture,),
+        traces=(trace,),
+        source_path=Path("science.fits"),
+        metadata=metadata,
+        plate_scale_arcsec_per_pixel=0.125,
+    )
+    output = write_extracted_exposure(product, tmp_path / "science.extracted.fits")
+
+    cached = read_extracted_exposure(
+        output,
+        source_path="science.fits",
+        metadata=metadata,
+        plate_scale_arcsec_per_pixel=0.125,
+    )
+
+    assert cached.metadata == metadata
+    assert cached.plate_scale_arcsec_per_pixel == 0.125
+    assert cached.profiles == cached.apertures == cached.traces == ()
+    np.testing.assert_allclose(cached.orders[0].flux, extracted_order.flux, equal_nan=True)
+    np.testing.assert_array_equal(cached.orders[0].mask, extracted_order.mask)

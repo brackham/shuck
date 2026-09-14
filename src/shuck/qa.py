@@ -14,6 +14,8 @@ from shuck.calibration.rectify import DistortionSolution, rectify_order
 from shuck.calibration.wavecal import WavelengthSolution
 from shuck.combine import CombinedSpectrum
 from shuck.extraction.optimal import ExtractedExposure
+from shuck.merge import MergedSpectrum
+from shuck.telluric import TelluricCorrectedSpectrum, TelluricCorrection
 
 _matplotlib_cache = Path(tempfile.gettempdir()) / "shuck-matplotlib"
 _matplotlib_cache.mkdir(parents=True, exist_ok=True)
@@ -406,6 +408,171 @@ def write_combination_qa(
         "sigma_clip": product.sigma_clip,
         "finite_fraction": finite_fraction,
         "median_signal_to_noise": median_snr,
+    }
+    metrics_path.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+    return plot_path, metrics_path
+
+
+def write_telluric_qa(
+    correction: TelluricCorrection,
+    corrected: TelluricCorrectedSpectrum,
+    output_prefix: str | Path,
+) -> tuple[Path, Path]:
+    """Write correction-shape and corrected-order QA for ``xtellcor`` output."""
+
+    prefix = Path(output_prefix)
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    plot_path = prefix.with_suffix(".png")
+    metrics_path = prefix.with_suffix(".json")
+    figure, axes = plt.subplots(2, 2, figsize=(15, 9), constrained_layout=True)
+    finite_fraction: dict[str, float] = {}
+    standard_finite_fraction: dict[str, float] = {}
+    median_snr: dict[str, float] = {}
+    correction_by_order = {order.order: order for order in correction.orders}
+    standard_by_order = {order.order: order for order in correction.standard_orders}
+    vega_by_order = {order.order: order for order in correction.vega_orders}
+    for order in corrected.orders:
+        telluric_order = correction_by_order[order.order]
+        standard_order = standard_by_order[order.order]
+        vega_order = vega_by_order[order.order]
+        standard_good = (
+            (standard_order.mask == 0)
+            & np.isfinite(standard_order.flux)
+            & (standard_order.flux > 0)
+        )
+        vega_good = np.isfinite(vega_order.flux) & (vega_order.flux > 0)
+        standard_finite_fraction[str(order.order)] = float(np.mean(standard_good))
+        if np.any(standard_good) and np.any(vega_good):
+            standard_scale = np.nanmedian(standard_order.flux[standard_good])
+            vega_scale = np.nanmedian(vega_order.flux[vega_good])
+            axes[0, 0].plot(
+                standard_order.wavelength_micron[standard_good],
+                standard_order.flux[standard_good] / standard_scale,
+                color="tab:blue",
+                linewidth=0.35,
+            )
+            axes[0, 0].plot(
+                vega_order.wavelength_micron[vega_good],
+                vega_order.flux[vega_good] / vega_scale,
+                color="tab:orange",
+                linewidth=0.35,
+            )
+        telluric_good = (telluric_order.mask == 0) & np.isfinite(telluric_order.flux)
+        axes[0, 1].plot(
+            telluric_order.wavelength_micron[telluric_good],
+            telluric_order.flux[telluric_good],
+            linewidth=0.5,
+        )
+        good = (order.mask == 0) & np.isfinite(order.flux) & np.isfinite(order.uncertainty)
+        finite_fraction[str(order.order)] = float(np.mean(good))
+        if not np.any(good):
+            continue
+        scale = np.nanmedian(order.flux[good])
+        if scale != 0:
+            axes[1, 0].plot(order.wavelength_micron[good], order.flux[good] / scale, linewidth=0.5)
+        axes[1, 1].plot(
+            order.wavelength_micron[good],
+            order.flux[good] / order.uncertainty[good],
+            linewidth=0.5,
+        )
+        median_snr[str(order.order)] = float(
+            np.nanmedian(order.flux[good] / order.uncertainty[good])
+        )
+    axes[0, 0].plot([], [], color="tab:blue", label="Observed A0V")
+    axes[0, 0].plot([], [], color="tab:orange", label="Modified Vega")
+    axes[0, 0].legend(loc="best")
+    axes[0, 0].set(
+        ylabel="Per-order normalized flux",
+        title="Observed A0V and modified Vega",
+    )
+    axes[0, 1].set(ylabel="Correction multiplier", title="Derived telluric correction")
+    axes[1, 0].set(
+        xlabel="Wavelength (µm)",
+        ylabel="Median-normalized flux",
+        title="Corrected science orders",
+    )
+    axes[1, 1].set(
+        xlabel="Wavelength (µm)",
+        ylabel="Signal-to-noise",
+        title="Corrected science signal-to-noise",
+    )
+    for axis in axes.flat:
+        axis.grid(alpha=0.2)
+    figure.suptitle(
+        f"{corrected.science_group} via {corrected.standard_group}; "
+        f"Vega shift={correction.applied_velocity_shift_kms:+.3f} km/s"
+    )
+    figure.savefig(plot_path, dpi=180)
+    plt.close(figure)
+    metrics = {
+        "science_group": corrected.science_group,
+        "standard_group": corrected.standard_group,
+        "standard_b_magnitude": correction.b_magnitude,
+        "standard_v_magnitude": correction.v_magnitude,
+        "standard_catalog_rv_kms": correction.catalog_rv_kms,
+        "earth_lsr_velocity_kms": correction.earth_lsr_velocity_kms,
+        "applied_velocity_shift_kms": correction.applied_velocity_shift_kms,
+        "science_airmass": corrected.science_airmass,
+        "standard_airmass": corrected.standard_airmass,
+        "airmass_difference": (
+            None
+            if corrected.science_airmass is None or corrected.standard_airmass is None
+            else corrected.standard_airmass - corrected.science_airmass
+        ),
+        "standard_finite_fraction": standard_finite_fraction,
+        "finite_fraction": finite_fraction,
+        "median_signal_to_noise": median_snr,
+    }
+    metrics_path.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+    return plot_path, metrics_path
+
+
+def write_merge_qa(product: MergedSpectrum, output_prefix: str | Path) -> tuple[Path, Path]:
+    """Write continuous-spectrum and overlap QA for ``mc_mergespec`` output."""
+
+    prefix = Path(output_prefix)
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    plot_path = prefix.with_suffix(".png")
+    metrics_path = prefix.with_suffix(".json")
+    good = (
+        (product.mask == 0)
+        & np.isfinite(product.flux)
+        & np.isfinite(product.uncertainty)
+        & (product.uncertainty > 0)
+    )
+    figure, axes = plt.subplots(2, 1, figsize=(12, 7), constrained_layout=True)
+    axes[0].plot(product.wavelength_micron[good], product.flux[good], linewidth=0.5)
+    axes[1].plot(
+        product.wavelength_micron[good],
+        product.flux[good] / product.uncertainty[good],
+        linewidth=0.5,
+    )
+    for overlap in product.overlap_ranges:
+        if overlap is not None:
+            for axis in axes:
+                axis.axvspan(*overlap, color="tab:blue", alpha=0.04)
+    axes[0].set(ylabel="Flux", title="Merged spectrum")
+    axes[1].set(xlabel="Wavelength (µm)", ylabel="Signal-to-noise")
+    for axis in axes:
+        axis.grid(alpha=0.2)
+    figure.savefig(plot_path, dpi=180)
+    plt.close(figure)
+    metrics = {
+        "orders": list(product.orders),
+        "pixel_count": int(product.wavelength_micron.size),
+        "finite_unflagged_fraction": float(np.mean(good)),
+        "wavelength_range_micron": [
+            float(np.nanmin(product.wavelength_micron)),
+            float(np.nanmax(product.wavelength_micron)),
+        ],
+        "overlap_ranges_micron": [
+            None if item is None else list(item) for item in product.overlap_ranges
+        ],
+        "median_signal_to_noise": (
+            float(np.nanmedian(product.flux[good] / product.uncertainty[good]))
+            if np.any(good)
+            else None
+        ),
     }
     metrics_path.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
     return plot_path, metrics_path
