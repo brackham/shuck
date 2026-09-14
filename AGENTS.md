@@ -46,10 +46,11 @@ If code and docs disagree, stop and flag the discrepancy rather than silently ch
 
 - Do not commit the SpeXTool source tree.
 - Do not commit full raw iSHELL data or full SpeXTool calibration/proc products.
-- Do not vendor SpeXTool calibration assets until redistribution rights have been established.
-- Local development may use `SPEXTOOL5_DIR` to locate SpeXTool 5.0.3 and
-  `SHUCK_REFERENCE_DATA` to locate the private regression dataset.
-- Unit tests must run without either environment variable. Full regression tests may skip clearly
+- The supported Spextool 5.0.3 runtime assets are vendored under `src/shuck/data/spextool/` with
+  attribution and checksums. Do not add further upstream or third-party files without auditing
+  their runtime need and provenance.
+- Local development may use `SHUCK_REFERENCE_DATA` to locate the private regression dataset.
+- Unit tests must run without private reference-data configuration. Full regression tests may skip clearly
   when `SHUCK_REFERENCE_DATA` is unavailable.
 
 ## Local development workspace
