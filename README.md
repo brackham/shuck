@@ -8,21 +8,26 @@ Shuck is an independent project. It is not an official NASA IRTF or Spextool pro
 
 ## Installation
 
-Install the `shuck-ishell` distribution from PyPI:
+Shuck is not yet available on PyPI. For now, install it directly from GitHub.
+
+Because the bundled Spextool calibration/reference assets are managed with Git LFS, install and
+initialize Git LFS first:
 
 ```bash
-pip install shuck-ishell
+git lfs install
+pip install "git+https://github.com/brackham/shuck.git"
 ```
 
-The import package is `shuck`; the routine command-line programs are `shuck` and `shuckit`.
-Required Spextool calibration/reference assets are included in the distribution. Normal users do
-not need to install Spextool or configure a separate reference-data path.
-
-For development from a checkout:
+For development from a source checkout:
 
 ```bash
+git clone https://github.com/brackham/shuck.git
+cd shuck
+git lfs pull
+
 python -m venv .venv
 .venv/bin/pip install -e '.[dev]'
+```
 ```
 
 ## Quick start

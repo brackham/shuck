@@ -11,8 +11,8 @@ Michael C. Cushing, William D. Vacca, and John T. Rayner.
 
 Spextool 5.0.3 was distributed without a formal software license. Michael Cushing has given the
 shuck project permission to reuse and redistribute the relevant Spextool material, with the request
-that users cite the Spextool paper. This permission is recorded here conservatively as a paraphrase;
-it is not a claim that the upstream material has been relicensed under the MIT License.
+that users cite the Spextool paper. This permission does not relicense the upstream material under
+the MIT License.
 
 The copied files retain their original filenames and relative directory structure under
 `src/shuck/data/spextool/`. Their purpose, upstream paths, and checksums are documented in the
@@ -36,9 +36,9 @@ citation of:
 The bundled `data/vega500000.sav` is the high-resolution Vega model distributed with Spextool and
 used by its telluric-correction procedure. Vacca, Cushing, & Rayner (2003) describe the underlying
 model as a Kurucz Vega spectrum at resolving power 500,000, scaled to the observed Vega flux at
-5556 Angstrom reported by Megessier (1995). No separate license or notice is embedded in the IDL
-save file. It is therefore retained as non-MIT Spextool material under the redistribution permission
-described above, with this scientific provenance preserved.
+5556 Å reported by Megessier (1995). No separate license or notice is embedded in the IDL save
+file. The file is preserved with its upstream scientific provenance and is not represented as
+MIT-licensed material.
 
 ## Material not copied
 
@@ -48,5 +48,6 @@ Shuck does not use those libraries, and they are not included in this repository
 Spextool IDL source, manuals, atmospheric-model grids, reference atlases, and calibration files for
 unsupported instrument modes are likewise not runtime dependencies and are not bundled.
 
-Files carrying a distinct notice or provenance remain subject to that notice or provenance. Nothing
-in shuck's MIT License supersedes third-party rights in the bundled scientific data.
+Any bundled files carrying separate copyright, license, or attribution notices remain subject to
+those notices. Nothing in shuck's MIT License supersedes third-party rights in the bundled
+scientific data.

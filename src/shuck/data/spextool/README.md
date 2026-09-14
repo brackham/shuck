@@ -4,8 +4,7 @@
 - Upstream version: 5.0.3
 - Authors: Michael C. Cushing, William D. Vacca, and John T. Rayner
 - Imported: 2026-09-14
-- Import source: the byte-for-byte local upstream tree at `reference/Spextool` in the shuck
-  development workspace; `data/version.dat` identifies that tree as version 5.0.3
+- Import source: Spextool 5.0.3 upstream assets used during vendoring. The bundled files are preserved byte-for-byte and verified by `SHA256SUMS`.
 - Purpose: allow installed copies of shuck to run the supported iSHELL J3/Kgas workflow without an
   external Spextool installation
 
