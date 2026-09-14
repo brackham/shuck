@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
@@ -52,6 +51,7 @@ from shuck.qa import (
     write_telluric_qa,
     write_wavecal_qa,
 )
+from shuck.resources import spextool_root
 from shuck.telluric import (
     TelluricCorrectedSpectrum,
     apply_telluric_correction,
@@ -97,19 +97,6 @@ def _raw_paths(raw_directory: Path, references: tuple[str | Placeholder, ...]) -
     return tuple(paths)
 
 
-def _spextool_directory() -> Path:
-    value = os.environ.get("SPEXTOOL5_DIR")
-    if not value:
-        raise ValueError(
-            "SPEXTOOL5_DIR must point to the local SpeXTool 5.0.3 root containing "
-            "instruments/ishell/data"
-        )
-    directory = Path(value).expanduser().resolve()
-    if not (directory / "instruments" / "ishell" / "data").is_dir():
-        raise ValueError(f"SPEXTOOL5_DIR is not a SpeXTool iSHELL tree: {directory}")
-    return directory
-
-
 def run_pipeline(
     control: ControlFile,
     *,
@@ -135,7 +122,7 @@ def run_pipeline(
     for directory in (calibration_directory, processing_directory, qa_directory):
         directory.mkdir(parents=True, exist_ok=True)
 
-    spextool = _spextool_directory()
+    spextool = spextool_root()
     detector = load_ishell_detector_calibration(spextool)
     object_frames = tuple(
         frame

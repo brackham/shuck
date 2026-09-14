@@ -99,7 +99,9 @@ class WavelengthSolution:
 def load_wavecal_info(spextool_directory: str | Path, mode: str) -> WavecalInfo:
     """Read SpeXTool's iSHELL ``*_wavecalinfo.fits`` reference product.
 
-    The behavioral reference is SpeXTool 5.0.3 ``mc_readwavecalinfo.pro``.
+    The behavioral reference is SpeXTool 5.0.3 ``mc_readwavecalinfo.pro``. The
+    pipeline passes the bundled package-data root; an explicit root can be
+    supplied for developer comparisons.
     """
 
     if mode not in {"J3", "Kgas"}:

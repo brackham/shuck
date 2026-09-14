@@ -86,7 +86,9 @@ def unrotate_from_processing(image: np.ndarray, rotation: int) -> np.ndarray:
 def load_flat_info(spextool_directory: str | Path, mode: str) -> FlatInfo:
     """Read a SpeXTool iSHELL ``*_flatinfo.fits`` calibration.
 
-    The behavioral reference is SpeXTool 5.0.3 ``mc_readflatinfo.pro``.
+    The behavioral reference is SpeXTool 5.0.3 ``mc_readflatinfo.pro``. The
+    pipeline passes the bundled package-data root; an explicit root can be
+    supplied for developer comparisons.
     """
 
     canonical_mode = mode.strip()

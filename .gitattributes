@@ -1,0 +1,2 @@
+src/shuck/data/spextool/**/*.fits filter=lfs diff=lfs merge=lfs -text
+src/shuck/data/spextool/**/*.sav filter=lfs diff=lfs merge=lfs -text

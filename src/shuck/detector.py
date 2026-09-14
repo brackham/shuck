@@ -63,9 +63,10 @@ def load_ishell_detector_calibration(
     """Load the detector assets used by SpeXTool 5.0.3 for iSHELL.
 
     The behavioral references are ``mc_readishellfits.pro`` and the iSHELL
-    instrument configuration. ``spextool_directory`` is the root containing
-    ``instruments/ishell/data``; calibration assets are never copied into
-    shuck products.
+    instrument configuration. ``spextool_directory`` is a Spextool-format
+    root containing ``instruments/ishell/data``. Normal pipeline execution
+    supplies shuck's installed package-data root; an explicit root remains
+    useful for developer comparisons.
     """
 
     root = Path(spextool_directory).expanduser().resolve()

@@ -24,3 +24,4 @@ reference/
 /local/
 *.fits
 *.fits.gz
+!src/shuck/data/spextool/**/*.fits

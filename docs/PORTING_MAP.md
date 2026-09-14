@@ -1,7 +1,8 @@
 # SpeXTool 5.0.3 behavioral-reference map
 
-This document identifies the existing IDL routines to consult while reimplementing the supported
-workflow. It is a navigation aid, not permission to copy source text.
+This document identifies paths in the separate upstream Spextool 5.0.3 tree to consult while
+reimplementing the supported workflow. It is a navigation aid, not a list of runtime paths and not
+permission to copy source text. Shuck loads its selected calibration assets from package data.
 
 ## Instrument configuration and raw detector data
 

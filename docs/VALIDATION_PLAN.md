@@ -11,8 +11,11 @@ Full-resolution raw and SpeXTool products remain outside Git. Point to them with
 
 ```bash
 export SHUCK_REFERENCE_DATA=/path/to/shuck-reference/260406
-export SPEXTOOL5_DIR=/path/to/Spextool
 ```
+
+The pipeline loads its pinned Spextool 5.0.3 calibration/reference assets from the installed
+`shuck` package. The separate Spextool tree used to inspect upstream IDL behavior is a read-only
+developer reference, not a runtime requirement.
 
 Suggested private layout:
 

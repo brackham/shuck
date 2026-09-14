@@ -71,7 +71,11 @@ class TelluricCorrectedSpectrum:
 
 
 def load_vega_model(spextool_directory: str | Path) -> VegaModel:
-    """Load SpeXTool's R=500,000 Vega model used by ``xtellcor.pro``."""
+    """Load SpeXTool's R=500,000 Vega model used by ``xtellcor.pro``.
+
+    The pipeline passes the bundled package-data root; an explicit root can
+    be supplied for developer comparisons.
+    """
 
     path = Path(spextool_directory).expanduser().resolve() / "data" / "vega500000.sav"
     if not path.is_file():
