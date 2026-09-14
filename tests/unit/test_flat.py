@@ -4,6 +4,7 @@ import numpy as np
 
 from shuck.calibration.flat import (
     FlatInfo,
+    _buffer_rectification_grid,
     _smooth_fiterpolate,
     find_order_edges,
     find_vertical_order_offset,
@@ -55,6 +56,15 @@ def test_fiterpolate_surface_reproduces_quadratic_input() -> None:
     smooth = _smooth_fiterpolate(image, 5, 3)
 
     np.testing.assert_allclose(smooth, image, rtol=1e-11, atol=1e-9)
+
+
+def test_rectification_grid_matches_spextool_flat_edge_clamp() -> None:
+    y_arc = np.arange(8, dtype=np.float64)
+
+    buffered = _buffer_rectification_grid(y_arc, ybuffer=1)
+
+    np.testing.assert_array_equal(buffered, [1, 1, 2, 3, 4, 4, 4, 4])
+    np.testing.assert_array_equal(y_arc, np.arange(8, dtype=np.float64))
 
 
 def test_vertical_order_offset_tracks_shifted_flat() -> None:

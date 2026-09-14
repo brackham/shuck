@@ -427,8 +427,10 @@ def normalize_spectral_flat(
         top = np.polynomial.polynomial.polyval(x, edge_coefficients[order_index, 1])
         slit_pixels = int(info.oversample * np.rint(np.nanmin(top - bottom)))
         y_arc = np.linspace(0.0, info.slit_height_arcsec, slit_pixels)
+        rectification_arc = _buffer_rectification_grid(y_arc, info.ybuffer)
         pixel_y = (
-            bottom[None, :] + (y_arc[:, None] / info.slit_height_arcsec) * (top - bottom)[None, :]
+            bottom[None, :]
+            + (rectification_arc[:, None] / info.slit_height_arcsec) * (top - bottom)[None, :]
         )
         pixel_x = np.broadcast_to(x[None, :], pixel_y.shape)
         rectified = ndimage.map_coordinates(
@@ -475,6 +477,19 @@ def normalize_spectral_flat(
             order_rms[order_index] = np.nan
     normalized[~np.isfinite(normalized) | (normalized <= 0)] = 1.0
     return normalized, output_variance, model_image, order_rms
+
+
+def _buffer_rectification_grid(y_arc: np.ndarray, ybuffer: int) -> np.ndarray:
+    """Apply the edge-coordinate clamp from SpeXTool ``mc_normspecflat.pro``."""
+
+    grid = np.asarray(y_arc, dtype=np.float64).copy()
+    if ybuffer <= 0:
+        return grid
+    if grid.size <= 2 * ybuffer + 2:
+        raise ValueError("rectified slit grid is too short for the requested ybuffer")
+    grid[:ybuffer] = grid[ybuffer]
+    grid[grid.size - ybuffer - 2 :] = grid[grid.size - ybuffer - 3]
+    return grid
 
 
 def build_normalized_flat(
