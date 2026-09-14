@@ -670,6 +670,9 @@ def test_override_precedence_and_file_object_override(tmp_path: Path) -> None:
         """
 [objects."Planet"]
 frametype = "standard"
+bmag = 7.63
+vmag = 7.54
+rv_kms = -8.36
 
 [objects."Renamed"]
 frametype = "standard"
@@ -693,6 +696,10 @@ object = "Renamed"
     assert rows["three.fits"].frametype is FrameType.STANDARD
     assert rows["three.fits"].target == "Planet"
     assert {standard.target for standard in result.control.standards} == {"Planet", "Renamed"}
+    planet = next(standard for standard in result.control.standards if standard.target == "Planet")
+    assert planet.bmag == 7.63
+    assert planet.vmag == 7.54
+    assert planet.rv_kms == -8.36
     notes = "\n".join(result.review_notes)
     assert "one.fits: frametype=ignore applied from file override" in notes
     assert "two.fits: object='Renamed' applied from file override" in notes

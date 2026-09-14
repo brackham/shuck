@@ -123,6 +123,14 @@ class RawIShellFitsError(ValueError):
     """Raised when a FITS file is not a valid native iSHELL raw exposure."""
 
 
+def read_ishell_raw_metadata(path: str | Path) -> IShellRawMetadata:
+    """Read only metadata required downstream from an iSHELL primary header."""
+
+    frame_path = Path(path)
+    header = fits.getheader(frame_path, ext=0)
+    return _parse_ishell_raw_metadata(header, frame_path)
+
+
 def read_ishell_raw(path: str | Path) -> RawIShellFrame:
     """Read one native iSHELL MEF exposure into a DN-valued raw frame.
 
@@ -382,7 +390,13 @@ def _parse_ishell_raw_metadata(header: fits.Header, path: Path) -> IShellRawMeta
     mjd_obs = _required_finite_float(header, "MJD_OBS", path)
     airmass = _required_positive_float(header, "TCS_AM", path)
     position_angle = _required_finite_float(header, "POSANGLE", path)
-    slit_width_arcsec = _optional_value(header, "SLIT", float)
+    slit_value = header.get("SLIT")
+    try:
+        slit_width_arcsec = None if slit_value is None else float(slit_value)
+    except (TypeError, ValueError):
+        # Calibration frames conventionally use SLIT='Mirror'. Downstream
+        # telluric processing explicitly requires a numeric science slit.
+        slit_width_arcsec = None
     if slit_width_arcsec is not None and (
         not np.isfinite(slit_width_arcsec) or slit_width_arcsec <= 0
     ):

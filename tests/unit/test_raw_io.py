@@ -31,6 +31,7 @@ def _raw_header() -> fits.Header:
             "TCS_AM": 1.25,
             "TCS_HA": "-01:02:03.4",
             "POSANGLE": -74.18,
+            "SLIT": 0.75,
             "CUSTOM": "preserve me",
         }
     )
@@ -106,6 +107,18 @@ def test_read_ishell_raw_parses_typed_metadata(native_mef: Path) -> None:
     assert metadata.airmass == 1.25
     assert metadata.hour_angle == "-01:02:03.4"
     assert metadata.position_angle == -74.18
+    assert metadata.slit_width_arcsec == 0.75
+
+
+def test_read_ishell_raw_accepts_mirror_in_calibration_slit_header(
+    native_mef: Path, tmp_path: Path
+) -> None:
+    path = tmp_path / "mirror_slit.fits"
+    shutil.copyfile(native_mef, path)
+    with fits.open(path, mode="update", memmap=False) as hdus:
+        hdus[0].header["SLIT"] = "Mirror"
+
+    assert read_ishell_raw(path).metadata.slit_width_arcsec is None
 
 
 def test_read_ishell_raw_preserves_complete_primary_header(native_mef: Path) -> None:
@@ -184,6 +197,7 @@ def test_read_ishell_raw_rejects_wrong_detector_dimensions(tmp_path: Path) -> No
         ("DIVISOR", 0.0, "Invalid DIVISOR"),
         ("CO_ADDS", 1.5, "Invalid CO_ADDS"),
         ("TCS_RA", "not-an-angle", "Invalid TCS_RA"),
+        ("SLIT", -0.1, "Invalid SLIT"),
     ],
 )
 def test_read_ishell_raw_rejects_missing_or_invalid_required_metadata(

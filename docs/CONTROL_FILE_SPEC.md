@@ -46,6 +46,9 @@ The v0.1 override schema uses exact object names and filenames:
 ```toml
 [objects."HD_106965"]
 frametype = "standard"
+bmag = 7.63
+vmag = 7.54
+rv_kms = -8.36
 
 [files."icm.2026A021.260406.TOI3884.00030.a.fits"]
 object = "HD_106965"
@@ -53,9 +56,11 @@ frametype = "standard"
 ```
 
 Object rules support `frametype = "science"`, `"standard"`, or `"ignore"`, because they apply to
-target identities. File rules support `object`, `frametype`, or both; a file rule may use any
-supported raw-exposure role. A file-level object correction establishes the resolved object name;
-the matching object rule is then considered, and a file-level `frametype` has final precedence:
+target identities. Standard-star object rules may also record numeric `bmag`, `vmag`, and `rv_kms`
+values; setup carries these explicitly into the standards table instead of emitting placeholders.
+File rules support `object`, `frametype`, or both; a file rule may use any supported raw-exposure
+role. A file-level object correction establishes the resolved object name; the matching object rule
+is then considered, and a file-level `frametype` has final precedence:
 
 ```text
 file frametype > resolved-object frametype > normal header/setup inference
