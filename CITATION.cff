@@ -1,0 +1,44 @@
+cff-version: 1.2.0
+message: >-
+  If you use shuck, please cite the Spextool paper. If you use the telluric-correction
+  implementation, please also cite the Vacca, Cushing, and Rayner telluric paper.
+title: shuck
+type: software
+version: 0.1.0.dev0
+date-released: 2026-09-14
+authors:
+  - family-names: Rackham
+    given-names: Benjamin V.
+license: MIT
+repository-code: https://github.com/brackham/shuck
+references:
+  - type: article
+    title: >-
+      Spextool: A Spectral Extraction Package for SpeX, a 0.8–5.5 Micron
+      Cross-Dispersed Spectrograph
+    authors:
+      - family-names: Cushing
+        given-names: Michael C.
+      - family-names: Vacca
+        given-names: William D.
+      - family-names: Rayner
+        given-names: John T.
+    journal: Publications of the Astronomical Society of the Pacific
+    volume: 116
+    start: 362
+    year: 2004
+    doi: 10.1086/382907
+  - type: article
+    title: A Method of Correcting Near-Infrared Spectra for Telluric Absorption
+    authors:
+      - family-names: Vacca
+        given-names: William D.
+      - family-names: Cushing
+        given-names: Michael C.
+      - family-names: Rayner
+        given-names: John T.
+    journal: Publications of the Astronomical Society of the Pacific
+    volume: 115
+    start: 389
+    year: 2003
+    doi: 10.1086/346193
