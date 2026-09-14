@@ -87,6 +87,7 @@ class IShellRawMetadata:
     airmass: float
     hour_angle: str
     position_angle: float
+    slit_width_arcsec: float | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,14 @@ class RawIShellFrame:
 
 class RawIShellFitsError(ValueError):
     """Raised when a FITS file is not a valid native iSHELL raw exposure."""
+
+
+def read_ishell_raw_metadata(path: str | Path) -> IShellRawMetadata:
+    """Read only metadata required downstream from an iSHELL primary header."""
+
+    frame_path = Path(path)
+    header = fits.getheader(frame_path, ext=0)
+    return _parse_ishell_raw_metadata(header, frame_path)
 
 
 def read_ishell_raw(path: str | Path) -> RawIShellFrame:
@@ -381,6 +390,19 @@ def _parse_ishell_raw_metadata(header: fits.Header, path: Path) -> IShellRawMeta
     mjd_obs = _required_finite_float(header, "MJD_OBS", path)
     airmass = _required_positive_float(header, "TCS_AM", path)
     position_angle = _required_finite_float(header, "POSANGLE", path)
+    slit_value = header.get("SLIT")
+    try:
+        slit_width_arcsec = None if slit_value is None else float(slit_value)
+    except (TypeError, ValueError):
+        # Calibration frames conventionally use SLIT='Mirror'. Downstream
+        # telluric processing explicitly requires a numeric science slit.
+        slit_width_arcsec = None
+    if slit_width_arcsec is not None and (
+        not np.isfinite(slit_width_arcsec) or slit_width_arcsec <= 0
+    ):
+        raise RawIShellFitsError(
+            f"Invalid SLIT={slit_width_arcsec!r} in {path}; expected value > 0"
+        )
     ra = _required_value(header, "TCS_RA", str, path)
     dec = _required_value(header, "TCS_DEC", str, path)
     hour_angle = _required_value(header, "TCS_HA", str, path)
@@ -406,6 +428,7 @@ def _parse_ishell_raw_metadata(header: fits.Header, path: Path) -> IShellRawMeta
         airmass=airmass,
         hour_angle=hour_angle,
         position_angle=position_angle,
+        slit_width_arcsec=slit_width_arcsec,
     )
 
 

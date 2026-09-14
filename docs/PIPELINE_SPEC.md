@@ -31,6 +31,12 @@ science and standard exposures; B-beam calibration frames remain calibration fra
 
 Stage commands remain available independently for development and inspection.
 
+Reduction commands recompute extraction products by default. For iterative downstream work,
+`--reuse-extractions` may be passed to `shuck extract`, `shuck combine`, `shuck telluric`,
+`shuck merge`, or `shuckit`. Reuse is limited to complete combination groups whose checksummed
+extraction files are at least as new as their raw inputs. Because this does not fingerprint code,
+control parameters, or calibration products, a final reduction must run without this option.
+
 ## Calibration and reduction stages
 
 ### Detector read/correction

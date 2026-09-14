@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import configparser
 import json
+import math
 import os
 import re
 import tomllib
@@ -234,6 +235,9 @@ class ObjectOverride:
 
     object_name: str
     frametype: FrameType
+    bmag: float | None = None
+    vmag: float | None = None
+    rv_kms: float | None = None
 
 
 @dataclass(frozen=True)
@@ -347,17 +351,34 @@ def parse_setup_overrides(path: str | Path) -> SetupOverrides:
     file_entries = _override_table(document, "files")
     objects: list[ObjectOverride] = []
     for object_name, values in object_entries.items():
-        _reject_override_fields(values, {"frametype"}, f"object {object_name!r}")
+        _reject_override_fields(
+            values,
+            {"frametype", "bmag", "vmag", "rv_kms"},
+            f"object {object_name!r}",
+        )
         frametype = _override_frametype(values, f"object {object_name!r}")
         if frametype not in {FrameType.SCIENCE, FrameType.STANDARD, FrameType.IGNORE}:
             raise ControlFileError(
                 f"Override object {object_name!r} has frametype {frametype.value!r}; "
                 "object rules may only classify target exposures"
             )
+        bmag = _optional_override_float(values, "bmag", f"object {object_name!r}")
+        vmag = _optional_override_float(values, "vmag", f"object {object_name!r}")
+        rv_kms = _optional_override_float(values, "rv_kms", f"object {object_name!r}")
+        if frametype is not FrameType.STANDARD and any(
+            value is not None for value in (bmag, vmag, rv_kms)
+        ):
+            raise ControlFileError(
+                f"Override object {object_name!r} may define bmag, vmag, or rv_kms only "
+                "when frametype='standard'"
+            )
         objects.append(
             ObjectOverride(
                 object_name=object_name,
                 frametype=frametype,
+                bmag=bmag,
+                vmag=vmag,
+                rv_kms=rv_kms,
             )
         )
 
@@ -494,6 +515,7 @@ def build_setup_control(
         else Path(overrides_path).resolve()
     )
     proposed_overrides: str | None = None
+    overrides = SetupOverrides()
     if resolved_overrides_path.exists():
         overrides = parse_setup_overrides(resolved_overrides_path)
         classified = _apply_setup_overrides(base_classified, overrides, review_notes)
@@ -516,7 +538,7 @@ def build_setup_control(
             review_notes.append(f"{frame.header.path.name}: {detail}")
     calibrations, calibration_positions = _build_calibration_groups(classified, review_notes)
     darks, dark_ids = _build_dark_groups(classified, review_notes)
-    standards = _build_standards(classified)
+    standards = _build_standards(classified, overrides)
     data = _build_data_rows(
         classified,
         calibrations,
@@ -1424,7 +1446,9 @@ def _build_dark_groups(
     return tuple(darks), ids
 
 
-def _build_standards(frames: tuple[ClassifiedFrame, ...]) -> tuple[Standard, ...]:
+def _build_standards(
+    frames: tuple[ClassifiedFrame, ...], overrides: SetupOverrides
+) -> tuple[Standard, ...]:
     targets = sorted(
         {
             frame.header.object_name
@@ -1434,17 +1458,31 @@ def _build_standards(frames: tuple[ClassifiedFrame, ...]) -> tuple[Standard, ...
         key=str.casefold,
     )
     used_ids: set[str] = set()
+    override_by_target = {item.object_name: item for item in overrides.objects}
     standards: list[Standard] = []
     for target in targets:
         standard_id = _unique_identifier(_identifier(target), used_ids)
         used_ids.add(standard_id)
+        override = override_by_target.get(target)
         standards.append(
             Standard(
                 standard_id,
                 target,
-                Placeholder("enter B magnitude"),
-                Placeholder("enter V magnitude"),
-                Placeholder("enter verified radial velocity in km/s"),
+                (
+                    override.bmag
+                    if override is not None and override.bmag is not None
+                    else Placeholder("enter B magnitude")
+                ),
+                (
+                    override.vmag
+                    if override is not None and override.vmag is not None
+                    else Placeholder("enter V magnitude")
+                ),
+                (
+                    override.rv_kms
+                    if override is not None and override.rv_kms is not None
+                    else Placeholder("enter verified radial velocity in km/s")
+                ),
             )
         )
     return tuple(standards)
@@ -1723,6 +1761,18 @@ def _override_frametype(values: Mapping[str, object], owner: str) -> FrameType:
         raise ControlFileError(
             f"Override {owner} has invalid frametype {value!r}; expected one of {choices}"
         ) from error
+
+
+def _optional_override_float(values: Mapping[str, object], field: str, owner: str) -> float | None:
+    value = values.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ControlFileError(f"Override {owner} field {field} must be a number")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ControlFileError(f"Override {owner} field {field} must be finite")
+    return result
 
 
 def _require_sections(parser: configparser.ConfigParser, names: Iterable[str]) -> None:
