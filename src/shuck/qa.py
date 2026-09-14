@@ -27,6 +27,60 @@ matplotlib.use("Agg")
 from matplotlib import pyplot as plt  # noqa: E402
 
 
+def _robust_y_limits(
+    values: np.ndarray,
+    mask: np.ndarray | None = None,
+    *,
+    lower_percentile: float = 1.0,
+    upper_percentile: float = 99.0,
+    padding_fraction: float = 0.10,
+) -> tuple[float, float] | None:
+    """Return finite, outlier-resistant display limits without changing data.
+
+    Nonzero mask values are excluded when at least one finite unmasked sample
+    exists. Small samples use their complete finite range because percentiles
+    are not a useful outlier estimate in that regime.
+    """
+
+    data = np.asarray(values, dtype=np.float64)
+    finite = np.isfinite(data)
+    if mask is not None:
+        flags = np.asarray(mask)
+        if flags.shape != data.shape:
+            raise ValueError("mask must have the same shape as values")
+        unmasked = finite & (flags == 0)
+        selection = unmasked if np.any(unmasked) else finite
+    else:
+        selection = finite
+    selected = data[selection]
+    if selected.size == 0:
+        return None
+    if not 0 <= lower_percentile < upper_percentile <= 100:
+        raise ValueError("percentiles must satisfy 0 <= lower < upper <= 100")
+    if not np.isfinite(padding_fraction) or padding_fraction < 0:
+        raise ValueError("padding_fraction must be finite and nonnegative")
+
+    if selected.size < 20:
+        lower = float(np.min(selected))
+        upper = float(np.max(selected))
+    else:
+        lower, upper = (
+            float(value)
+            for value in np.percentile(
+                selected,
+                (lower_percentile, upper_percentile),
+            )
+        )
+    span = upper - lower
+    magnitude = max(abs(lower), abs(upper))
+    if span <= 1.0e-12 * magnitude:
+        half_range = padding_fraction * magnitude if magnitude > 0 else padding_fraction
+        center = 0.5 * (lower + upper)
+        return center - half_range, center + half_range
+    padding = padding_fraction * span
+    return lower - padding, upper + padding
+
+
 def write_flat_qa(product: NormalizedFlat, output_prefix: str | Path) -> tuple[Path, Path]:
     """Write visual and numerical QA for a normalized spectral flat.
 
@@ -319,17 +373,29 @@ def write_extraction_qa(
     axes[0, 1].set(xlabel="Order", ylabel="FWHM (arcsec)", title="Spatial-profile width")
     axes[1, 0].semilogy(orders, trace_rms, marker="o", markersize=3)
     axes[1, 0].set(xlabel="Order", ylabel="RMS (arcsec)", title="Trace residuals")
+    normalized_fluxes: list[np.ndarray] = []
+    normalized_masks: list[np.ndarray] = []
     for order in product.orders:
         finite = np.isfinite(order.flux)
         if not np.any(finite):
             continue
         scale = np.nanmedian(order.flux[finite])
         if scale != 0:
+            normalized_flux = order.flux[finite] / scale
             axes[1, 1].plot(
                 order.wavelength_micron[finite],
-                order.flux[finite] / scale,
+                normalized_flux,
                 linewidth=0.5,
             )
+            normalized_fluxes.append(normalized_flux)
+            normalized_masks.append(order.mask[finite])
+    if normalized_fluxes:
+        limits = _robust_y_limits(
+            np.concatenate(normalized_fluxes),
+            np.concatenate(normalized_masks),
+        )
+        if limits is not None:
+            axes[1, 1].set_ylim(*limits)
     axes[1, 1].set(
         xlabel="Wavelength (µm)",
         ylabel="Median-normalized flux",
@@ -380,20 +446,27 @@ def write_combination_qa(
     figure, axes = plt.subplots(2, 1, figsize=(12, 8), constrained_layout=True)
     median_snr: dict[str, float] = {}
     finite_fraction: dict[str, float] = {}
+    normalized_fluxes: list[np.ndarray] = []
     for order in product.orders:
         good = (order.mask == 0) & np.isfinite(order.flux) & np.isfinite(order.uncertainty)
         finite_fraction[str(order.order)] = float(np.mean(good))
         if not np.any(good):
             continue
         scale = np.nanmedian(order.flux[good])
+        normalized_flux = order.flux[good] / scale
         axes[0].plot(
             order.wavelength_micron[good],
-            order.flux[good] / scale,
+            normalized_flux,
             linewidth=0.5,
         )
+        normalized_fluxes.append(normalized_flux)
         snr = order.flux[good] / order.uncertainty[good]
         median_snr[str(order.order)] = float(np.nanmedian(snr))
         axes[1].plot(order.wavelength_micron[good], snr, linewidth=0.5)
+    if normalized_fluxes:
+        limits = _robust_y_limits(np.concatenate(normalized_fluxes))
+        if limits is not None:
+            axes[0].set_ylim(*limits)
     axes[0].set(ylabel="Median-normalized flux", title="Combined orders")
     axes[1].set(xlabel="Wavelength (µm)", ylabel="Signal-to-noise")
     for axis in axes:
@@ -431,6 +504,9 @@ def write_telluric_qa(
     correction_by_order = {order.order: order for order in correction.orders}
     standard_by_order = {order.order: order for order in correction.standard_orders}
     vega_by_order = {order.order: order for order in correction.vega_orders}
+    standard_fluxes: list[np.ndarray] = []
+    correction_fluxes: list[np.ndarray] = []
+    corrected_fluxes: list[np.ndarray] = []
     for order in corrected.orders:
         telluric_order = correction_by_order[order.order]
         standard_order = standard_by_order[order.order]
@@ -445,31 +521,37 @@ def write_telluric_qa(
         if np.any(standard_good) and np.any(vega_good):
             standard_scale = np.nanmedian(standard_order.flux[standard_good])
             vega_scale = np.nanmedian(vega_order.flux[vega_good])
+            normalized_standard = standard_order.flux[standard_good] / standard_scale
+            normalized_vega = vega_order.flux[vega_good] / vega_scale
             axes[0, 0].plot(
                 standard_order.wavelength_micron[standard_good],
-                standard_order.flux[standard_good] / standard_scale,
+                normalized_standard,
                 color="tab:blue",
                 linewidth=0.35,
             )
             axes[0, 0].plot(
                 vega_order.wavelength_micron[vega_good],
-                vega_order.flux[vega_good] / vega_scale,
+                normalized_vega,
                 color="tab:orange",
                 linewidth=0.35,
             )
+            standard_fluxes.extend((normalized_standard, normalized_vega))
         telluric_good = (telluric_order.mask == 0) & np.isfinite(telluric_order.flux)
         axes[0, 1].plot(
             telluric_order.wavelength_micron[telluric_good],
             telluric_order.flux[telluric_good],
             linewidth=0.5,
         )
+        correction_fluxes.append(telluric_order.flux[telluric_good])
         good = (order.mask == 0) & np.isfinite(order.flux) & np.isfinite(order.uncertainty)
         finite_fraction[str(order.order)] = float(np.mean(good))
         if not np.any(good):
             continue
         scale = np.nanmedian(order.flux[good])
         if scale != 0:
-            axes[1, 0].plot(order.wavelength_micron[good], order.flux[good] / scale, linewidth=0.5)
+            normalized_corrected = order.flux[good] / scale
+            axes[1, 0].plot(order.wavelength_micron[good], normalized_corrected, linewidth=0.5)
+            corrected_fluxes.append(normalized_corrected)
         axes[1, 1].plot(
             order.wavelength_micron[good],
             order.flux[good] / order.uncertainty[good],
@@ -478,6 +560,15 @@ def write_telluric_qa(
         median_snr[str(order.order)] = float(
             np.nanmedian(order.flux[good] / order.uncertainty[good])
         )
+    for axis, values in (
+        (axes[0, 0], standard_fluxes),
+        (axes[0, 1], correction_fluxes),
+        (axes[1, 0], corrected_fluxes),
+    ):
+        if values:
+            limits = _robust_y_limits(np.concatenate(values))
+            if limits is not None:
+                axis.set_ylim(*limits)
     axes[0, 0].plot([], [], color="tab:blue", label="Observed A0V")
     axes[0, 0].plot([], [], color="tab:orange", label="Modified Vega")
     axes[0, 0].legend(loc="best")
@@ -542,6 +633,9 @@ def write_merge_qa(product: MergedSpectrum, output_prefix: str | Path) -> tuple[
     )
     figure, axes = plt.subplots(2, 1, figsize=(12, 7), constrained_layout=True)
     axes[0].plot(product.wavelength_micron[good], product.flux[good], linewidth=0.5)
+    flux_limits = _robust_y_limits(product.flux, ~good)
+    if flux_limits is not None:
+        axes[0].set_ylim(*flux_limits)
     axes[1].plot(
         product.wavelength_micron[good],
         product.flux[good] / product.uncertainty[good],
