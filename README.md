@@ -1,14 +1,14 @@
 # shuck
 
 `shuck` is a scriptable, non-interactive Python reduction pipeline for NASA IRTF/iSHELL spectra.
-Its current focus is reproducing the scientifically relevant behavior of Spextool 5.0.3 for a
-deliberately narrow workflow, with explicit associations and inspectable intermediate products.
+Its current focus is reproducing the scientifically relevant behavior of Spextool 5.0.3 for a narrow 
+workflow with inspectable intermediate products.
 
 Shuck is an independent project. It is not an official NASA IRTF or Spextool product.
 
 ## Installation
 
-Shuck is not yet available on PyPI. For now, install it directly from GitHub.
+`shuck` is not yet available on PyPI. For now, install it directly from GitHub.
 
 Because the bundled Spextool calibration/reference assets are managed with Git LFS, install and
 initialize Git LFS first:
@@ -27,7 +27,6 @@ git lfs pull
 
 python -m venv .venv
 .venv/bin/pip install -e '.[dev]'
-```
 ```
 
 ## Quick start
@@ -77,14 +76,14 @@ auditable.
 
 ## Citation
 
-Users of shuck should cite:
+Users of `shuck` should cite:
 
 Cushing, M. C., Vacca, W. D., & Rayner, J. T. 2004,
 "Spextool: A Spectral Extraction Package for SpeX, a 0.8–5.5 Micron Cross-Dispersed
 Spectrograph," PASP, 116, 362.
 [https://doi.org/10.1086/382907](https://doi.org/10.1086/382907)
 
-Because shuck implements the Spextool telluric-correction procedure, users of that procedure should
+Because `shuck` implements the Spextool telluric-correction procedure, users of that procedure should
 also cite:
 
 Vacca, W. D., Cushing, M. C., & Rayner, J. T. 2003,
